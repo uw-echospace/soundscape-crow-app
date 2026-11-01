@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "audiomoth-hid": "2.3.0",
+    "exifr": "7.1.3",
     "serialport": "13.0.0"
   },
   "devDependencies": {
@@ -25,6 +26,7 @@
       "main.js",
       "index.html",
       "help.txt",
+      "guide.txt",
       "assets/icon.png",
       ".env",
       "package.json"

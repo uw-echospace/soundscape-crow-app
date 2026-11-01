@@ -41,6 +41,9 @@ CHUNK_SAMPLES = 144000
 BIRD_RATE = 48000
 BAT_RATE = 256000
 BATCH_SIZE = 8
+
+PHOTO_MAX_DISTANCE_M = 100
+PHOTO_FILES = {"location": "LOCATION_PHOTO", "reference": "REFERENCE_PHOTO"}
 READ_BLOCK_SECONDS = 10
 
 SLUG_PATTERN = re.compile(r"^[A-Za-z0-9-]+$")
@@ -51,6 +54,10 @@ GAIN_PATTERN = re.compile(r"at ([a-z-]+) gain")
 BATTERY_PATTERN = re.compile(r"battery was (less than |greater than )?(\d+\.\d+)V")
 TEMPERATURE_PATTERN = re.compile(r"temperature was (-?\d+\.\d+)C")
 STOP_PATTERN = re.compile(r"[Rr]ecording (?:stopped|cancelled)[^.]*? due to ([^.]+)")
+
+
+def auto_threads():
+    return max(1, (os.cpu_count() or 1) - 1)
 
 
 def emit(**message):
@@ -73,8 +80,7 @@ def is_species_label(label):
 
 class Models:
 
-    def __init__(self, models_dir):
-        threads = os.cpu_count() or 1
+    def __init__(self, models_dir, threads):
         path = lambda name: os.path.join(models_dir, name)
 
         self.bird_labels = read_labels(path(BIRDNET_LABELS))
@@ -385,7 +391,7 @@ def read_card_files(folder):
     return config, other_files
 
 
-def write_meta(path, args, context, folder_name, recordings, first_day, last_day):
+def write_meta(path, args, context, folder_name, recordings, first_day, last_day, photos, threads):
     analyzed = [r for r in recordings if r["status"] == "analyzed"]
     model_file = lambda name: {"file": name, "sha256": sha256(os.path.join(args.models, name))}
     config, other_files = read_card_files(args.input)
@@ -401,12 +407,14 @@ def write_meta(path, args, context, folder_name, recordings, first_day, last_day
                 "numpy": np.__version__,
                 "soxr": package_version("soxr"),
                 "ai_edge_litert": package_version("ai-edge-litert"),
+                "threads": threads,
             },
         },
         "user": context.get("user"),
         "location": {"slug": args.location, "portal_id": location.get("id"), "name": location.get("name"),
                      "lat": location.get("lat"), "lon": location.get("lon")},
         "device": {"slug": args.device, "portal_id": device.get("id"), "name": device.get("name"),
+                   "lat": device.get("lat"), "lon": device.get("lon"),
                    "checked_out_at": device.get("checked_out_at"),
                    "audiomoth_ids": sorted({r["device_id"] for r in recordings if r["device_id"]})},
         "deployment": {
@@ -425,6 +433,7 @@ def write_meta(path, args, context, folder_name, recordings, first_day, last_day
             "files": recordings,
         },
         "sd_card": {"config": config, "other_files": other_files},
+        "photos": photos,
         "models": {
             BIRD_MODEL_FOLDER: {
                 "name": "BirdNET",
@@ -501,6 +510,50 @@ def write_meta(path, args, context, folder_name, recordings, first_day, last_day
         f.write("\n")
 
 
+def parse_utc(text):
+    return datetime.datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
+
+def photo_window(first_start):
+    local_day = first_start.replace(tzinfo=datetime.timezone.utc).astimezone().date()
+    start = datetime.datetime.combine(local_day, datetime.time()).astimezone()
+    return start.astimezone(datetime.timezone.utc), datetime.datetime.now(datetime.timezone.utc)
+
+
+def check_location_photo(photo, window):
+    if not photo.get("taken_utc"):
+        return "The location photo has no date or time. Choose another photo, or remove it."
+    taken = parse_utc(photo["taken_utc"])
+    if not window[0] <= taken <= window[1]:
+        when = taken.astimezone().strftime("%Y-%m-%d %H:%M")
+        start = window[0].astimezone().strftime("%Y-%m-%d")
+        return f"The location photo was taken {when}, but it must be taken on or after {start}. Please select another photo."
+    return None
+
+
+def copy_photos(photos, folder, window):
+    records = {}
+    for kind, name in PHOTO_FILES.items():
+        photo = photos.get(kind)
+        if not photo:
+            records[kind] = None
+            continue
+        file = name + os.path.splitext(photo["path"])[1].lower()
+        shutil.copyfile(photo["path"], os.path.join(folder, file))
+        records[kind] = {
+            "file": file,
+            "original_name": photo["name"],
+            "sha256": sha256(photo["path"]),
+            "taken_utc": photo.get("taken_utc"),
+            "time_source": photo.get("time_source"),
+            "lat": photo.get("lat"),
+            "lon": photo.get("lon"),
+        }
+        if kind == "location":
+            records[kind].update(distance_m=photo.get("distance_m"), max_distance_m=PHOTO_MAX_DISTANCE_M,
+                                 valid_from_utc=utc(window[0]), valid_to_utc=utc(window[1]))
+    return records
+
+
 def make_read_only(folder):
     for root, dirs, files in os.walk(folder, topdown=False):
         for name in files:
@@ -519,6 +572,7 @@ def main():
     for name in ("input", "output", "location", "device", "models"):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--context", default="{}")
+    parser.add_argument("--threads", type=int, default=0)
     args = parser.parse_args()
     context = json.loads(args.context)
 
@@ -565,8 +619,16 @@ def main():
     if os.path.exists(destination):
         return emit(type="error", message=f"A results folder with this name already exists: {destination}. Move or rename it, then try again.")
 
+    photos = context.get("photos") or {}
+    window = photo_window(min(start for start, _, _ in readable))
+    if photos.get("location"):
+        problem = check_location_photo(photos["location"], window)
+        if problem:
+            return emit(type="error", message=problem)
+
     emit(type="progress", fraction=0, message="Loading models...")
-    models = Models(args.models)
+    threads = args.threads if args.threads > 0 else auto_threads()
+    models = Models(args.models, threads)
 
     parts = tempfile.TemporaryDirectory(prefix="crow-")
     results = Results(parts.name)
@@ -593,7 +655,8 @@ def main():
     emit(type="progress", fraction=1, message="Writing results...")
     write_outputs(results, staging, args.location)
     parts.cleanup()
-    write_meta(os.path.join(staging, "META.TXT"), args, context, folder_name, list(records.values()), first_day, last_day)
+    photo_records = copy_photos(photos, staging, window)
+    write_meta(os.path.join(staging, "META.TXT"), args, context, folder_name, list(records.values()), first_day, last_day, photo_records, threads)
     os.rename(staging, destination)
     make_read_only(destination)
 

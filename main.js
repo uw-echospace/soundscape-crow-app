@@ -5,16 +5,18 @@
 const { app, BrowserWindow, dialog, ipcMain, net, shell } = require('electron');
 const { execFile, spawn } = require('child_process');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const util = require('util');
 const audiomoth = require('audiomoth-hid');
+const exifr = require('exifr');
 const { SerialPort } = require('serialport');
 
 // AudioMoth Configuration Settings
 
 const GAIN_MEDIUM = 2;
-const SLEEP_DURATION_S = 10 * 60;
-const RECORD_DURATION_S = 50 * 60;
+const SLEEP_DURATION_S = 5 * 60;
+const RECORD_DURATION_S = 5 * 60;
 const LED_ENABLED = true;
 const BATTERY_LEVEL_ENABLED = true;
 const RECORDING_PERIODS = [[0, 24 * 60]];
@@ -282,7 +284,7 @@ async function flashAudioMoth (report) {
 
 // Analyze Data (see analyze.py)
 
-const RESULTS_FOLDER_NAME = 'Soundscape Results';
+const RESULTS_FOLDER_NAME = 'SoundscapeResults';
 
 let analysisProcess = null;
 
@@ -308,6 +310,52 @@ ipcMain.handle('choose-recordings', async (event) => {
     if (result.canceled) return null;
 
     return result.filePaths[0];
+
+});
+
+const PHOTO_EXTENSIONS = ['jpg', 'jpeg', 'heic', 'heif', 'png', 'tif', 'tiff'];
+
+function photoTime (exif) {
+
+    const parts = (text) => String(text).split(/[: ]/).map(Number);
+    if (exif.GPSDateStamp && Array.isArray(exif.GPSTimeStamp)) {
+        const [y, m, d] = parts(exif.GPSDateStamp);
+        const [hh, mm, ss] = exif.GPSTimeStamp;
+        return { time: new Date(Date.UTC(y, m - 1, d, hh, mm, Math.floor(ss))), source: 'gps' };
+    }
+    if (!exif.DateTimeOriginal) return null;
+    const [y, m, d, hh, mm, ss] = parts(exif.DateTimeOriginal);
+    const offset = /^([+-])(\d\d):(\d\d)$/.exec(exif.OffsetTimeOriginal || '');
+    if (offset) {
+        const minutes = (offset[1] === '-' ? -1 : 1) * (Number(offset[2]) * 60 + Number(offset[3]));
+        return { time: new Date(Date.UTC(y, m - 1, d, hh, mm, ss) - minutes * 60000), source: 'camera_offset' };
+    }
+    return { time: new Date(y, m - 1, d, hh, mm, ss), source: 'camera_local' };
+
+}
+
+ipcMain.handle('choose-photo', async (event, title) => {
+
+    const result = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender), {
+        title,
+        filters: [{ name: 'Photos', extensions: PHOTO_EXTENSIONS }],
+        properties: ['openFile']
+    });
+    if (result.canceled) return null;
+
+    const file = result.filePaths[0];
+    const photo = { path: file, name: path.basename(file), lat: null, lon: null, taken_utc: null, time_source: null };
+    const exif = await exifr.parse(file, { gps: true, reviveValues: false }).catch(() => null) || {};
+    if (Number.isFinite(exif.latitude) && Number.isFinite(exif.longitude)) {
+        photo.lat = exif.latitude;
+        photo.lon = exif.longitude;
+    }
+    const taken = photoTime(exif);
+    if (taken && !isNaN(taken.time)) {
+        photo.taken_utc = taken.time.toISOString().replace('.000Z', 'Z');
+        photo.time_source = taken.source;
+    }
+    return photo;
 
 });
 
@@ -339,7 +387,30 @@ ipcMain.handle('choose-output', async (event) => {
 
 });
 
-ipcMain.handle('analyze', (event, { folder, output, location, device }) => {
+// Threading for analysis
+
+const THREADS_SETTING_FILE = () => path.join(app.getPath('userData'), 'threads.txt');
+
+function savedThreads () {
+
+    try {
+        return Math.max(0, parseInt(fs.readFileSync(THREADS_SETTING_FILE(), 'utf8'), 10) || 0);
+    } catch {
+        return 0;
+    }
+
+}
+
+ipcMain.handle('threads', () => {
+
+    const cores = os.availableParallelism();
+    return { cores, automatic: Math.max(1, cores - 1), saved: Math.min(savedThreads(), cores) };
+
+});
+
+ipcMain.handle('set-threads', (_event, threads) => fs.writeFileSync(THREADS_SETTING_FILE(), String(threads)));
+
+ipcMain.handle('analyze', (event, { folder, output, location, device, photos }) => {
 
     const locationSlug = slug(location.name);
     const deviceSlug = slug(device.name);
@@ -361,9 +432,9 @@ ipcMain.handle('analyze', (event, { folder, output, location, device }) => {
         let pending = '';
 
         analysisProcess = spawn(command, [...args, '--input', folder, '--output', output, '--location', locationSlug, '--device', deviceSlug,
-            '--models', models, '--context', JSON.stringify({
+            '--models', models, '--threads', String(savedThreads()), '--context', JSON.stringify({
                 app: { name: app.getName(), version: app.getVersion(), platform: process.platform, arch: process.arch },
-                user, location, device
+                user, location, device, photos
             })], { windowsHide: true });
 
         analysisProcess.stdout.on('data', (data) => {
@@ -374,7 +445,7 @@ ipcMain.handle('analyze', (event, { folder, output, location, device }) => {
                 let message;
                 try { message = JSON.parse(line); } catch { continue; }
                 if (message.type === 'progress') event.sender.send('analysis-progress', message);
-                if (message.type === 'done') result = { ok: true, path: message.path, message: 'Done! ' + message.analyzed + ' recordings analyzed' + (message.skipped ? ' (' + message.skipped + ' could not be read)' : '') + '. Your upload folder is ready.' };
+                if (message.type === 'done') result = { ok: true, path: message.path, message: 'Done! ' + message.analyzed + ' recordings analyzed' + (message.skipped ? ' (' + message.skipped + ' could not be read)' : '') + '. Your upload folder is ready.' + (photos.location ? '' : ' It has no location photo.') };
                 if (message.type === 'error') result = { ok: false, message: message.message };
             }
         });
@@ -434,7 +505,9 @@ async function portal (route, options = {}) {
         err.signedOut = true;
         throw err;
     }
-    if (!response.ok) throw new Error(data.error || 'The Soundscape website returned an error (' + response.status + ').');
+
+    if (response.status === 503) throw new Error(data.error || 'The service is unavailable right now. Please try again later.');
+    if (!response.ok) throw new Error(data.error || 'The service returned an error (' + response.status + ').');
 
     return data;
 

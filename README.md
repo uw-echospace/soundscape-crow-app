@@ -6,7 +6,7 @@ The CROW app is used for configuring AudioMoth devices and analyzing generated r
 
 After logging in, you can flash any connected AudioMoth to the preset setting with the latest firmware:
 Sample rate: 192 kHz
-Duty cycle: 10 min / 50 min
+Duty cycle: 5 min recording / 5 min sleep
 Schedule: 00:00-24:00
 
 The voltage reading of the AudioMoth batteries will also be displayed.
@@ -15,6 +15,7 @@ The voltage reading of the AudioMoth batteries will also be displayed.
 
 The app can analyze data from an AudioMoth SD card structure ready for upload to the webportal. You will be prompted to select a location and inventory item before, logging in and selecting the correct settings is essential to populate the META.TXT file properly. BirdNET 2.4 and BattyBirdNET 1.0 USA-WEST are used.
 
+Supports multithreading.
 
 ## Signing in
 

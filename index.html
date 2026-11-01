@@ -15,6 +15,7 @@
         --accent: #2b6cb0;
         --success: #1e7b34;
         --error: #b3261e;
+        --warning: #9a5b00;
     }
     * { box-sizing: border-box; }
     body {
@@ -113,7 +114,8 @@
         font: inherit;
         color: var(--text);
     }
-    #recordings-path, #output-path { margin-left: 10px; color: var(--muted); word-break: break-all; user-select: text; }
+    #analyze select { width: 100%; max-width: 400px; }
+    #recordings-path, #output-path, .path { margin-left: 10px; color: var(--muted); overflow-wrap: anywhere; user-select: text; }
     #show-folder { display: none; margin-top: 10px; }
     progress { display: none; width: 320px; margin-top: 16px; }
     .step { margin-bottom: 18px; }
@@ -128,6 +130,16 @@
     .status { margin-top: 16px; user-select: text; }
     .status.success { color: var(--success); }
     .status.error { color: var(--error); }
+    .check { margin: 4px 0 0; font-size: 13px; user-select: text; }
+    .check.ok { color: var(--success); }
+    .check.error { color: var(--error); }
+    .check.warning { color: var(--warning); }
+    .link { padding: 0; margin-left: 10px; border: 0; background: none; color: var(--accent); font: inherit; font-size: 13px; text-decoration: underline; cursor: pointer; }
+    #guide { margin-bottom: 18px; padding: 12px 16px; border: 1px solid #c3ccd3; border-radius: 6px; background: #fff; }
+    #guide h3 { margin: 0 0 4px; font-size: 15px; }
+    #guide p { min-height: 63px; margin: 0 0 10px; }
+    #guide-nav { display: flex; align-items: center; gap: 12px; }
+    #guide-count { color: var(--muted); font-size: 13px; }
 </style>
 </head>
 <body>
@@ -160,10 +172,19 @@
         <h2>Flash AudioMoth</h2>
         <p class="muted">1) Connect a computer to the AudioMoth via USB, 2) move the Audiomoth switch to the USB/OFF mode, 3) click the Flash Audiomoth button.</p>
         <p id="battery" class="muted">No AudioMoth connected</p>
+        <div id="guide">
+            <h3 id="guide-title"></h3>
+            <p id="guide-text"></p>
+            <div id="guide-nav">
+                <button id="guide-back" class="secondary" aria-label="Previous step">&larr;</button>
+                <span id="guide-count"></span>
+                <button id="guide-next" class="secondary" aria-label="Next step">&rarr;</button>
+            </div>
+        </div>
         <table>
             <tr><td>Sample rate</td><td>192 kHz</td></tr>
             <tr><td>Gain</td><td>Medium</td></tr>
-            <tr><td>Sleep / record</td><td>10 min / 50 min</td></tr>
+            <tr><td>Record / sleep</td><td>5 min / 5 min</td></tr>
             <tr><td>LED</td><td>On</td></tr>
             <tr><td>Battery level</td><td>On</td></tr>
             <tr><td>Schedule</td><td>24 hours (UTC)</td></tr>
@@ -183,12 +204,26 @@
             <button id="choose-output" class="secondary">Choose save folder</button>
             <span id="output-path"></span>
         </div>
+        <label>Processor threads
+            <select id="threads"></select>
+        </label>
         <label>Location
             <select id="location"></select>
         </label>
         <label>AudioMoth
             <select id="device"></select>
         </label>
+        <div class="step">
+            <button id="choose-location-photo" class="secondary">Choose location photo</button>
+            <span id="location-photo-path" class="path">Arm's length from the AudioMoth</span>
+            <button id="remove-location-photo" class="link" hidden>Remove</button>
+            <p id="location-photo-check" class="check"></p>
+        </div>
+        <div class="step">
+            <button id="choose-reference-photo" class="secondary">Choose reference photo (optional)</button>
+            <span id="reference-photo-path" class="path">Shows surroundings</span>
+            <button id="remove-reference-photo" class="link" hidden>Remove</button>
+        </div>
         <button id="analyze-button" class="primary" disabled>Analyze</button>
         <progress id="analyze-progress" max="1" value="0"></progress>
         <p id="analyze-status" class="status"></p>
@@ -216,6 +251,28 @@
         details.append(summary, text);
         faq.append(details);
     }
+
+    /* Flashing guide */
+
+    const steps = fs.readFileSync(path.join(__dirname, 'guide.txt'), 'utf8').split(/\r?\n\s*\n/)
+        .map((block) => block.trim().split(/\r?\n/)).filter((lines) => lines[0]);
+    const guideBack = document.getElementById('guide-back');
+    const guideNext = document.getElementById('guide-next');
+    let step = 0;
+
+    function showStep (index) {
+        step = Math.max(0, Math.min(steps.length - 1, index));
+        const [title, ...text] = steps[step];
+        document.getElementById('guide-title').textContent = 'Step ' + (step + 1) + ': ' + title;
+        document.getElementById('guide-text').textContent = text.join(' ');
+        document.getElementById('guide-count').textContent = (step + 1) + ' of ' + steps.length;
+        guideBack.disabled = step === 0;
+        guideNext.disabled = step === steps.length - 1;
+    }
+
+    guideBack.addEventListener('click', () => showStep(step - 1));
+    guideNext.addEventListener('click', () => showStep(step + 1));
+    showStep(0);
 
     /* Sign in */
 
@@ -326,7 +383,8 @@
     function fillSelect (select, items, prompt) {
         select.replaceChildren(new Option(prompt, ''));
         for (const item of items) {
-            const option = new Option(item.name, item.id);
+            const coordinates = Number.isFinite(item.lat) && Number.isFinite(item.lon) ? ' (' + item.lat.toFixed(5) + ', ' + item.lon.toFixed(5) + ')' : '';
+            const option = new Option(item.name + (select === deviceSelect ? coordinates : ''), item.id);
             option.item = item;
             select.add(option);
         }
@@ -342,8 +400,71 @@
         analyzeStatus.textContent = text;
     }
 
+    /* Photos */
+
+    const PHOTO_MAX_DISTANCE_M = 100;
+    const photos = { location: null, reference: null };
+    const locationPhotoCheck = document.getElementById('location-photo-check');
+
+    function distanceMeters (lat1, lon1, lat2, lon2) {
+        const rad = Math.PI / 180;
+        const a = Math.sin((lat2 - lat1) * rad / 2) ** 2 + Math.cos(lat1 * rad) * Math.cos(lat2 * rad) * Math.sin((lon2 - lon1) * rad / 2) ** 2;
+        return 2 * 6371000 * Math.asin(Math.sqrt(a));
+    }
+
+    function checkLocationPhoto () {
+        const photo = photos.location;
+        const device = selected(deviceSelect);
+        let state, text;
+        if (!photo) {
+            state = 'warning';
+            text = 'No location photo. You can still analyze, but please add one if you can.';
+        } else if (photo.lat === null) {
+            state = 'error';
+            text = 'This photo has no location. Turn on location for your camera, take the photo again, and choose it.';
+        } else if (!photo.taken_utc) {
+            state = 'error';
+            text = 'This photo has no date or time. Choose another photo.';
+        } else if (new Date(photo.taken_utc) > Date.now() + 5 * 60000) {
+            state = 'error';
+            text = 'This photo\'s date is in the future. Check the date on your phone.';
+        } else if (!device) {
+            state = '';
+            text = 'Choose an AudioMoth to check this photo.';
+        } else if (!Number.isFinite(device.lat) || !Number.isFinite(device.lon)) {
+            state = 'error';
+            text = 'This AudioMoth has no location so the photo cannot be checked. Please assign a location to it on the webportal.';
+        } else {
+            photo.distance_m = Math.round(distanceMeters(photo.lat, photo.lon, device.lat, device.lon));
+            state = photo.distance_m <= PHOTO_MAX_DISTANCE_M ? 'ok' : 'error';
+            text = state === 'ok'
+                ? photo.distance_m + ' m from the AudioMoth, taken ' + new Date(photo.taken_utc).toLocaleString() + '.'
+                : 'This photo was taken ' + photo.distance_m + ' m from the AudioMoth. It must be within ' + PHOTO_MAX_DISTANCE_M + ' m.';
+        }
+        locationPhotoCheck.className = 'check ' + state;
+        locationPhotoCheck.textContent = text;
+        return state === 'error' || (photo && !device);
+    }
+
+    function setPhoto (kind, photo) {
+        photos[kind] = photo;
+        document.getElementById(kind + '-photo-path').textContent = photo ? photo.name
+            : kind === 'location' ? 'Arm\'s length from the AudioMoth' : 'Surroundings photo';
+        document.getElementById('remove-' + kind + '-photo').hidden = !photo;
+        updateAnalyzeButton();
+    }
+
+    for (const [kind, title] of [['location', 'Choose the location photo'], ['reference', 'Choose the reference photo']]) {
+        document.getElementById('choose-' + kind + '-photo').addEventListener('click', async () => {
+            const photo = await ipcRenderer.invoke('choose-photo', title);
+            if (photo) setPhoto(kind, photo);
+        });
+        document.getElementById('remove-' + kind + '-photo').addEventListener('click', () => setPhoto(kind, null));
+    }
+
     function updateAnalyzeButton () {
-        if (!analyzing) analyzeButton.disabled = !recordingsFolder || !selected(locationSelect) || !selected(deviceSelect);
+        const photoProblem = checkLocationPhoto();
+        if (!analyzing) analyzeButton.disabled = !recordingsFolder || !selected(locationSelect) || !selected(deviceSelect) || photoProblem;
     }
 
     async function loadLocations () {
@@ -394,6 +515,16 @@
 
     ipcRenderer.invoke('output-folder').then(setOutputFolder);
 
+    const threadsSelect = document.getElementById('threads');
+
+    ipcRenderer.invoke('threads').then(({ cores, automatic, saved }) => {
+        threadsSelect.add(new Option('Automatic (' + automatic + ' of ' + cores + ')', 0));
+        for (let n = 1; n <= cores; n++) threadsSelect.add(new Option(String(n), n));
+        threadsSelect.value = String(saved);
+    });
+
+    threadsSelect.addEventListener('change', () => ipcRenderer.invoke('set-threads', Number(threadsSelect.value)));
+
     chooseOutputButton.addEventListener('click', async () => {
         const folder = await ipcRenderer.invoke('choose-output');
         if (folder) setOutputFolder(folder);
@@ -412,6 +543,9 @@
         analyzeStatus.textContent = message.message;
     });
 
+    const photoControls = () => [chooseButton, chooseOutputButton, threadsSelect, locationSelect, deviceSelect, logoutButton,
+        ...document.querySelectorAll('#analyze .step button')];
+
     analyzeButton.addEventListener('click', async () => {
         if (analyzing) {
             ipcRenderer.invoke('cancel-analysis');
@@ -419,7 +553,7 @@
         }
 
         analyzing = true;
-        for (const control of [chooseButton, chooseOutputButton, locationSelect, deviceSelect, logoutButton]) control.disabled = true;
+        for (const control of photoControls()) control.disabled = true;
         analyzeButton.textContent = 'Cancel';
         analyzeProgress.value = 0;
         analyzeProgress.classList.add('running');
@@ -431,11 +565,12 @@
             folder: recordingsFolder,
             output: outputFolder,
             location: selected(locationSelect),
-            device: selected(deviceSelect)
+            device: selected(deviceSelect),
+            photos
         });
 
         analyzing = false;
-        for (const control of [chooseButton, chooseOutputButton, locationSelect, deviceSelect, logoutButton]) control.disabled = false;
+        for (const control of photoControls()) control.disabled = false;
         analyzeButton.textContent = 'Analyze';
         analyzeProgress.classList.remove('running');
         analyzeStatus.textContent = result.message;
