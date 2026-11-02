@@ -29,7 +29,7 @@ Q: My location or AudioMoth is not in the list.
 The lists come from the online webportal and only show your checked out AudioMoths. You can add additional locations on the website. You must use the same location when uploading data and in the CROW app.
 
 Q: How long does analysis take?
-It depends on your computer and how much audio there is. A full SD card can take several hours. Keep the computer awake and plugged in.
+It depends on your computer and how much audio there is. A full SD card can take several hours. Your computer won't fall asleep while running analysis, but keep it plugged in and leave it open.
 
 Q: Analysis says it needs a Mac with Apple silicon.
 Analysis does not work on older Intel Macs. Use a Mac with an M1 chip or newer, or a Windows or Linux computer.

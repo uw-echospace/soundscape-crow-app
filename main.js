@@ -2,7 +2,7 @@
 
 'use strict';
 
-const { app, BrowserWindow, dialog, ipcMain, net, shell } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, net, powerSaveBlocker, shell } = require('electron');
 const { execFile, spawn } = require('child_process');
 const fs = require('fs');
 const os = require('os');
@@ -437,6 +437,8 @@ ipcMain.handle('analyze', (event, { folder, output, location, device, photos }) 
                 user, location, device, photos
             })], { windowsHide: true });
 
+        const awake = powerSaveBlocker.start('prevent-app-suspension');
+
         analysisProcess.stdout.on('data', (data) => {
             pending += data.toString();
             const lines = pending.split('\n');
@@ -456,6 +458,7 @@ ipcMain.handle('analyze', (event, { folder, output, location, device, photos }) 
 
         analysisProcess.on('close', (code, signal) => {
             analysisProcess = null;
+            powerSaveBlocker.stop(awake);
             if (signal) result = { ok: false, message: 'Analysis cancelled.' };
             else if (!result.ok && code !== 0 && result.message === 'The analysis stopped unexpectedly.') result.message += ' ' + stderr.trim().split('\n').pop();
             resolve(result);
@@ -602,11 +605,37 @@ app.whenReady().then(() => {
     });
 
     window.loadFile('index.html');
+    window.on('close', (event) => { if (!confirmStopAnalysis(window)) event.preventDefault(); });
 
 });
 
+let stopConfirmed = false;
+
+function confirmStopAnalysis (window) {
+
+    if (!analysisProcess || stopConfirmed) return true;
+    const choice = dialog.showMessageBoxSync(window || BrowserWindow.getAllWindows()[0], {
+        type: 'warning',
+        buttons: ['Keep analyzing', 'Stop and quit'],
+        defaultId: 0,
+        cancelId: 0,
+        message: 'Analysis is still running',
+        detail: 'If you quit now, analysis will cancel and you will need to start over again.'
+    });
+    if (choice === 0) return false;
+    stopConfirmed = true;
+    return true;
+
+}
+
+app.on('will-quit', () => { if (analysisProcess) analysisProcess.kill(); });
+
 app.on('before-quit', (event) => {
 
+    if (!confirmStopAnalysis()) {
+        event.preventDefault();
+        return;
+    }
     if (!token) return;
     event.preventDefault();
     const timeout = new Promise((resolve) => setTimeout(resolve, 2000));
