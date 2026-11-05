@@ -214,13 +214,13 @@
         </label>
         <div class="step">
             <button id="choose-location-photo" class="secondary">Choose location photo</button>
-            <span id="location-photo-path" class="path">Arm's length from the AudioMoth</span>
+            <span id="location-photo-path" class="path"></span>
             <button id="remove-location-photo" class="link" hidden>Remove</button>
             <p id="location-photo-check" class="check"></p>
         </div>
         <div class="step">
             <button id="choose-reference-photo" class="secondary">Choose reference photo (optional)</button>
-            <span id="reference-photo-path" class="path">Shows surroundings</span>
+            <span id="reference-photo-path" class="path"></span>
             <button id="remove-reference-photo" class="link" hidden>Remove</button>
         </div>
         <button id="analyze-button" class="primary" disabled>Run detections</button>
@@ -416,8 +416,8 @@
         const device = selected(deviceSelect);
         let state, text;
         if (!photo) {
-            state = 'warning';
-            text = 'No location photo. You can still run detections, but please add one if you can.';
+            state = '';
+            text = '';
         } else if (photo.lat === null) {
             state = 'error';
             text = 'This photo has no location. Turn on location for your camera, take the photo again, and choose it.';
@@ -447,8 +447,7 @@
 
     function setPhoto (kind, photo) {
         photos[kind] = photo;
-        document.getElementById(kind + '-photo-path').textContent = photo ? photo.name
-            : kind === 'location' ? 'Arm\'s length from the AudioMoth' : 'Surroundings photo';
+        document.getElementById(kind + '-photo-path').textContent = photo ? photo.name : '';
         document.getElementById('remove-' + kind + '-photo').hidden = !photo;
         updateAnalyzeButton();
     }

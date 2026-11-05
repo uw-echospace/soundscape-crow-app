@@ -454,7 +454,7 @@ ipcMain.handle('analyze', (event, { folder, output, location, device, photos }) 
                 let message;
                 try { message = JSON.parse(line); } catch { continue; }
                 if (message.type === 'progress') event.sender.send('analysis-progress', message);
-                if (message.type === 'done') result = { ok: true, path: message.path, message: 'Done! ' + message.analyzed + ' recordings checked' + (message.skipped ? ' (' + message.skipped + ' could not be read)' : '') + '. Your upload folder is ready.' + (photos.location ? '' : ' It has no location photo.') };
+                if (message.type === 'done') result = { ok: true, path: message.path, message: 'Done! ' + message.analyzed + ' recordings checked' + (message.skipped ? ' (' + message.skipped + ' could not be read)' : '') + '. Your upload folder is ready.' };
                 if (message.type === 'error') result = { ok: false, message: message.message };
             }
         });
@@ -484,8 +484,6 @@ ipcMain.handle('cancel-analysis', () => {
 ipcMain.handle('show-folder', (_event, folder) => shell.showItemInFolder(folder));
 
 // Soundscape Webportal Login
-
-try { process.loadEnvFile(path.join(__dirname, '.env')); } catch {}
 
 const API_URL = 'https://seattle-soundscape.uw.edu/api/v1';
 
@@ -613,7 +611,7 @@ app.whenReady().then(() => {
 
     window.loadFile('index.html');
     window.on('close', (event) => { if (!confirmStopAnalysis(window)) event.preventDefault(); });
-    window.webContents.once('did-finish-load', () => checkForUpdate(window));
+    window.webContents.once('did-finish-load', () => (canAutoUpdate() ? autoUpdate(window) : checkForUpdate(window)));
 
 });
 
@@ -660,6 +658,38 @@ async function checkForUpdate (window) {
     });
 
     if (response === 0) shell.openExternal(release.html_url);
+
+}
+
+const canAutoUpdate = () => app.isPackaged && (process.platform === 'win32' || (process.platform === 'linux' && !!process.env.APPIMAGE));
+
+function autoUpdate (window) {
+
+    const { autoUpdater } = require('electron-updater');
+
+    autoUpdater.autoDownload = true;
+    autoUpdater.autoInstallOnAppQuit = true;
+
+    autoUpdater.on('error', () => checkForUpdate(window));
+
+    autoUpdater.on('update-downloaded', async (info) => {
+
+        if (analysisProcess || window.isDestroyed()) return;
+
+        const { response } = await dialog.showMessageBox(window, {
+            type: 'info',
+            buttons: ['Restart now', 'Later'],
+            defaultId: 0,
+            cancelId: 1,
+            message: 'A new version of CROW is ready',
+            detail: 'Version ' + info.version + ' has been downloaded. Restart CROW to finish updating, or it will update the next time you close it.'
+        });
+
+        if (response === 0 && !analysisProcess) autoUpdater.quitAndInstall();
+
+    });
+
+    autoUpdater.checkForUpdates().catch(() => {});
 
 }
 

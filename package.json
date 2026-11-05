@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "audiomoth-hid": "2.3.0",
+    "electron-updater": "6.8.11",
     "exifr": "7.1.3",
     "serialport": "13.0.0"
   },
@@ -28,13 +29,17 @@
       "help.txt",
       "guide.txt",
       "assets/icon.png",
-      ".env",
       "package.json"
     ],
     "asarUnpack": [
       "node_modules/audiomoth-hid/bin/**"
     ],
-    "publish": null,
+    "publish": {
+      "provider": "github",
+      "owner": "uw-echospace",
+      "repo": "soundscape-crow-app",
+      "releaseType": "draft"
+    },
     "npmRebuild": false,
     "mac": {
       "target": {
@@ -58,10 +63,11 @@
         }
       ],
       "x64ArchFiles": "Contents/Resources/analyzer/**",
-      "icon": "assets/AppIcon.icon"
+      "icon": "assets/AppIcon.icon",
+      "artifactName": "CROW-${version}-universal.${ext}"
     },
     "win": {
-      "target": "portable",
+      "target": "nsis",
       "extraResources": [
         {
           "from": "bin/windows",
@@ -92,7 +98,13 @@
           "from": "models",
           "to": "models"
         }
-      ]
+      ],
+      "artifactName": "CROW-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "artifactName": "CROW-Setup-${version}.${ext}"
     }
   }
 }

@@ -17,7 +17,7 @@ Q: What does flashing do?
 It installs the latest AudioMoth firmware and sets the default recording settings: 192 kHz, 5 minutes recording and 5 minutes sleep, all day (24 hrs).
 
 Q: Can I unplug the AudioMoth while it is flashing?
-No. Wait until the app says it is finished. If flashing stops partway, plug the AudioMoth back in and press Flash AudioMoth again. If the AudioMoth is disconnected in the middle of flashing, a manual reset may be required. Send an support email to get help.
+No. Wait until the app says it is finished. If flashing stops partway, plug the AudioMoth back in and press Flash AudioMoth again. If the AudioMoth is disconnected in the middle of flashing, a manual reset may be required. Send a support email to get help.
 
 Q: My AudioMoth isn't recording after I set it to CUSTOM.
 The AudioMoth will wait for a chime before recording. Use the mobile AudioMoth chime app to play the chime.
@@ -50,4 +50,4 @@ Q: Some recordings were skipped.
 Empty or damaged recordings are skipped. Bats are only checked in recordings made at 96 kHz or higher.
 
 Q: How do I upload my results?
-Sign in to the webportal and upload the whole results folder, with a photo taken at the deployment site.
+Sign in to the webportal and upload the whole results folder.
