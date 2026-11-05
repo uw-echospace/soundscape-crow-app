@@ -634,7 +634,7 @@ def main():
     results = Results(parts.name)
     analyzed = 0
     for index, (start, path, _) in enumerate(readable):
-        message = f"Analyzing recording {index + 1} of {len(readable)}..."
+        message = f"Detecting species in recording {index + 1} of {len(readable)}..."
         report = lambda fraction: emit(type="progress", fraction=(index + fraction) / len(readable), message=message)
         try:
             _, bats_analyzed = analyze_file(models, path, start, results, report)

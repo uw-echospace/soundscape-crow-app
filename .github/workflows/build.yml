@@ -22,6 +22,10 @@ jobs:
       - run: pip install -r requirements.txt pyinstaller==6.22.3
       - run: npm ci
       - run: npm run build:analyzer
+      - name: Use the tag as the app version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: npm version --no-git-tag-version --allow-same-version "${GITHUB_REF_NAME#v}"
       - run: npm run dist
       - uses: actions/upload-artifact@v4
         with:

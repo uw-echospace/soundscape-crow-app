@@ -1,6 +1,6 @@
 # CROW: Community Recording Online Workflow
 
-The CROW app is used for configuring AudioMoth devices and analyzing generated results from AudioMoths. See [Greater Seattle Soundscape Monitoring Project](https://seattle-soundscape.uw.edu) for more information about the project.
+The CROW app is used for configuring AudioMoth devices and running species detections on AudioMoth recordings. See [Greater Seattle Soundscape Monitoring Project](https://seattle-soundscape.uw.edu) for more information about the project.
 
 ## Flashing AudioMoths
 
@@ -11,15 +11,15 @@ Schedule: 00:00-24:00
 
 The voltage reading of the AudioMoth batteries will also be displayed.
 
-## Analyzing Data
+## Detecting Species
 
-The app can analyze data from an AudioMoth SD card structure ready for upload to the webportal. You will be prompted to select a location and inventory item before, logging in and selecting the correct settings is essential to populate the META.TXT file properly. BirdNET 2.4 and BattyBirdNET 1.0 USA-WEST are used.
+The app can run detections on an AudioMoth SD card structure ready for upload to the webportal. You will be prompted to select a location and inventory item before, logging in and selecting the correct settings is essential to populate the META.TXT file properly. BirdNET 2.4 and BattyBirdNET 1.0 USA-WEST are used.
 
 Supports multithreading.
 
 ## Signing in
 
-The app currently requires signing in to configure AudioMoths and analyze data using the models. Use the same credentials as you would on the webportal.
+The app currently requires signing in to configure AudioMoths and run detections using the models. Use the same credentials as you would on the webportal.
 
 ## OS Specifics
 

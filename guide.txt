@@ -14,10 +14,10 @@ Flash the AudioMoth
 Press Flash AudioMoth below and wait until it says it is finished. Do not unplug it while it is flashing.
 
 Start recording
-Unplug the USB cable and slide the switch to CUSTOM. Use the Chime app if the device is waiting for a chime. Ensure that the AudioMoth is recording before you leave your computer.
+Unplug the USB cable and slide the switch to CUSTOM. Use the AudioMoth mobile chime app to start the recording. Ensure that the AudioMoth is recording before you leave your computer.
 
 Deploy and take photos
 Secure the AudioMoth in place at your location. With your phone's location turned on, take a location photo at arm's length from the AudioMoth. You can also take a reference photo from farther away showing the surroundings.
 
 Collect the recordings
-When the deployment is over, slide the switch to USB/OFF and take out the SD card. Then use the Analyze Data tab.
+When the deployment is over, slide the switch to USB/OFF and take out the SD card. Then use the Detect Species tab.

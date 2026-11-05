@@ -19,6 +19,7 @@ const SLEEP_DURATION_S = 5 * 60;
 const RECORD_DURATION_S = 5 * 60;
 const LED_ENABLED = true;
 const BATTERY_LEVEL_ENABLED = true;
+const REQUIRE_CHIME = true;
 const RECORDING_PERIODS = [[0, 24 * 60]];
 const TIMEZONE_OFFSET_MINS = 0;
 
@@ -60,6 +61,12 @@ function buildPacket (sendTime) {
     i = packet.writeUInt8((BATTERY_LEVEL_ENABLED ? 0 : 1) | (PRERECORDING_PREP_TIME << 4), i);
     i = packet.writeInt8(TIMEZONE_OFFSET_MINS - tzHours * 60, i);
     i = packet.writeUInt8(0, i);
+    i = packet.writeUInt32LE(0, i);
+    i = packet.writeUInt32LE(0, i);
+    i = packet.writeUInt16LE(0, i);
+    i = packet.writeUInt16LE(0, i);
+    i = packet.writeUInt16LE(0, i);
+    i = packet.writeUInt8(REQUIRE_CHIME ? 1 : 0, i);
 
     return packet;
 
@@ -417,7 +424,7 @@ ipcMain.handle('analyze', (event, { folder, output, location, device, photos }) 
     if (!locationSlug || !deviceSlug) return { ok: false, message: 'This location or AudioMoth name has no letters or numbers.' };
 
     if (process.platform === 'darwin' && process.arch === 'x64') {
-        return { ok: false, message: 'Analysis needs a Mac with Apple silicon (M1 or newer). Please use a different computer.' };
+        return { ok: false, message: 'Detection needs a Mac with Apple silicon (M1 or newer). Please use a different computer.' };
     }
 
     if (output === path.join(app.getPath('documents'), RESULTS_FOLDER_NAME)) fs.mkdirSync(output, { recursive: true });
@@ -427,7 +434,7 @@ ipcMain.handle('analyze', (event, { folder, output, location, device, photos }) 
 
     return new Promise((resolve) => {
 
-        let result = { ok: false, message: 'The analysis stopped unexpectedly.' };
+        let result = { ok: false, message: 'Detection stopped unexpectedly.' };
         let stderr = '';
         let pending = '';
 
@@ -447,20 +454,20 @@ ipcMain.handle('analyze', (event, { folder, output, location, device, photos }) 
                 let message;
                 try { message = JSON.parse(line); } catch { continue; }
                 if (message.type === 'progress') event.sender.send('analysis-progress', message);
-                if (message.type === 'done') result = { ok: true, path: message.path, message: 'Done! ' + message.analyzed + ' recordings analyzed' + (message.skipped ? ' (' + message.skipped + ' could not be read)' : '') + '. Your upload folder is ready.' + (photos.location ? '' : ' It has no location photo.') };
+                if (message.type === 'done') result = { ok: true, path: message.path, message: 'Done! ' + message.analyzed + ' recordings checked' + (message.skipped ? ' (' + message.skipped + ' could not be read)' : '') + '. Your upload folder is ready.' + (photos.location ? '' : ' It has no location photo.') };
                 if (message.type === 'error') result = { ok: false, message: message.message };
             }
         });
 
         analysisProcess.stderr.on('data', (data) => { stderr = (stderr + data.toString()).slice(-2000); });
 
-        analysisProcess.on('error', (err) => { result = { ok: false, message: 'Could not start the analysis engine: ' + err.message }; });
+        analysisProcess.on('error', (err) => { result = { ok: false, message: 'Could not start the detection engine: ' + err.message }; });
 
         analysisProcess.on('close', (code, signal) => {
             analysisProcess = null;
             powerSaveBlocker.stop(awake);
-            if (signal) result = { ok: false, message: 'Analysis cancelled.' };
-            else if (!result.ok && code !== 0 && result.message === 'The analysis stopped unexpectedly.') result.message += ' ' + stderr.trim().split('\n').pop();
+            if (signal) result = { ok: false, message: 'Detection cancelled.' };
+            else if (!result.ok && code !== 0 && result.message === 'Detection stopped unexpectedly.') result.message += ' ' + stderr.trim().split('\n').pop();
             resolve(result);
         });
 
@@ -606,8 +613,55 @@ app.whenReady().then(() => {
 
     window.loadFile('index.html');
     window.on('close', (event) => { if (!confirmStopAnalysis(window)) event.preventDefault(); });
+    window.webContents.once('did-finish-load', () => checkForUpdate(window));
 
 });
+
+const APP_RELEASES_URL = 'https://api.github.com/repos/uw-echospace/soundscape-crow-app/releases/latest';
+
+const newerVersion = (a, b) => {
+
+    for (let i = 0; i < 3; i++) {
+
+        if ((a[i] || 0) !== (b[i] || 0)) return (a[i] || 0) > (b[i] || 0);
+
+    }
+
+    return false;
+
+};
+
+async function checkForUpdate (window) {
+
+    let release;
+
+    try {
+
+        const response = await net.fetch(APP_RELEASES_URL, { headers: { Accept: 'application/vnd.github+json' } });
+        if (!response.ok) return;
+        release = await response.json();
+
+    } catch (error) {
+
+        return;
+
+    }
+
+    if (!release.tag_name || !newerVersion(parseVersion(release.tag_name), parseVersion(app.getVersion()))) return;
+    if (window.isDestroyed()) return;
+
+    const { response } = await dialog.showMessageBox(window, {
+        type: 'info',
+        buttons: ['Open GitHub', 'Later'],
+        defaultId: 0,
+        cancelId: 1,
+        message: 'A new version of CROW is available',
+        detail: 'Version ' + versionString(parseVersion(release.tag_name)) + ' is now available. You have version ' + app.getVersion() + '. Download the new version from GitHub and install it.'
+    });
+
+    if (response === 0) shell.openExternal(release.html_url);
+
+}
 
 let stopConfirmed = false;
 
@@ -616,11 +670,11 @@ function confirmStopAnalysis (window) {
     if (!analysisProcess || stopConfirmed) return true;
     const choice = dialog.showMessageBoxSync(window || BrowserWindow.getAllWindows()[0], {
         type: 'warning',
-        buttons: ['Keep analyzing', 'Stop and quit'],
+        buttons: ['Keep running', 'Stop and quit'],
         defaultId: 0,
         cancelId: 0,
-        message: 'Analysis is still running',
-        detail: 'If you quit now, analysis will cancel and you will need to start over again.'
+        message: 'Detection is still running',
+        detail: 'If you quit now, detection will cancel and you will need to start over again.'
     });
     if (choice === 0) return false;
     stopConfirmed = true;
