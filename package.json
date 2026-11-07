@@ -74,7 +74,7 @@
       ],
       "x64ArchFiles": "Contents/Resources/analyzer/**",
       "icon": "assets/AppIcon.icon",
-      "artifactName": "CROW-${version}-universal.${ext}"
+      "artifactName": "CROW-macos.${ext}"
     },
     "win": {
       "target": "nsis",
@@ -129,12 +129,12 @@
           ]
         }
       ],
-      "artifactName": "CROW-${version}.${ext}"
+      "artifactName": "CROW-linux.${ext}"
     },
     "nsis": {
       "oneClick": true,
       "perMachine": false,
-      "artifactName": "CROW-Setup-${version}.${ext}"
+      "artifactName": "CROW-windows.${ext}"
     }
   }
 }
