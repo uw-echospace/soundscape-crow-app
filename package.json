@@ -1,7 +1,7 @@
 {
   "name": "stf-am-gui",
   "productName": "CROW",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Community Recording Online Workflow app for Seattle Soundscape",
   "main": "main.js",
   "private": true,
@@ -60,6 +60,16 @@
         {
           "from": "models",
           "to": "models"
+        },
+        {
+          "from": "addon",
+          "to": "addon",
+          "filter": [
+            "zoo_runner.py",
+            "models.json",
+            "base.txt",
+            "full.txt"
+          ]
         }
       ],
       "x64ArchFiles": "Contents/Resources/analyzer/**",
@@ -80,6 +90,16 @@
         {
           "from": "models",
           "to": "models"
+        },
+        {
+          "from": "addon",
+          "to": "addon",
+          "filter": [
+            "zoo_runner.py",
+            "models.json",
+            "base.txt",
+            "full.txt"
+          ]
         }
       ]
     },
@@ -97,6 +117,16 @@
         {
           "from": "models",
           "to": "models"
+        },
+        {
+          "from": "addon",
+          "to": "addon",
+          "filter": [
+            "zoo_runner.py",
+            "models.json",
+            "base.txt",
+            "full.txt"
+          ]
         }
       ],
       "artifactName": "CROW-${version}.${ext}"

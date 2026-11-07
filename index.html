@@ -116,6 +116,7 @@
     }
     #analyze select { width: 100%; max-width: 400px; }
     #recordings-path, #output-path, .path { margin-left: 10px; color: var(--muted); overflow-wrap: anywhere; user-select: text; }
+    #output-path.error { color: var(--error); }
     #show-folder { display: none; margin-top: 10px; }
     progress { display: none; width: 320px; margin-top: 16px; }
     .step { margin-bottom: 18px; }
@@ -140,6 +141,21 @@
     #guide p { min-height: 63px; margin: 0 0 10px; }
     #guide-nav { display: flex; align-items: center; gap: 12px; }
     #guide-count { color: var(--muted); font-size: 13px; }
+    #more-models { margin: 4px 0 18px; padding: 8px 12px; border: 1px solid #c3ccd3; border-radius: 6px; background: #fff; }
+    #more-models summary { font-weight: 600; cursor: pointer; }
+    #more-models summary span { font-weight: 400; color: var(--muted); }
+    #more-models .muted { margin: 8px 0 10px; font-size: 13px; }
+    .model { display: flex; align-items: flex-start; gap: 8px; padding: 6px 0; border-top: 1px solid #e3e7ea; }
+    .model input[type=checkbox] { width: auto; margin: 3px 0 0; }
+    .model div { flex: 1; }
+    .model b { font-weight: 600; }
+    .model small { display: block; color: var(--muted); font-size: 12px; }
+    .model label { display: flex; align-items: center; gap: 6px; margin: 0; font-size: 12px; }
+    .model label[hidden] { display: none; }
+    .model input[type=number] { width: 72px; margin: 0; padding: 2px 6px; }
+    #addon { margin-top: 8px; }
+    #addon progress { width: 100%; }
+    #estimate { margin: 0 0 16px; font-size: 13px; color: var(--muted); }
 </style>
 </head>
 <body>
@@ -195,6 +211,7 @@
     <section id="analyze">
         <h2>Detect Species</h2>
         <p class="muted">Bird and bat detection using BirdNET and BattyBirdNET.</p>
+        <p id="detect-unsupported" class="check error" hidden>Detection needs a Mac with Apple silicon (M1 or newer). You can still flash and configure AudioMoths on this Mac. To run detections, use a newer Mac or a Windows or Linux computer.</p>
         <div class="step">
             <button id="choose-recordings" class="secondary">Choose recordings folder</button>
             <span id="recordings-path">AudioMoth SD card</span>
@@ -203,6 +220,17 @@
             <button id="choose-output" class="secondary">Choose save folder</button>
             <span id="output-path"></span>
         </div>
+        <details id="more-models">
+            <summary>More models <span id="more-models-count"></span></summary>
+            <div id="model-list"></div>
+            <div id="addon">
+                <p id="addon-warning" class="check warning" hidden></p>
+                <button id="install-addon" class="secondary" hidden></button>
+                <progress id="addon-progress"></progress>
+                <p id="addon-status" class="check"></p>
+                <button id="remove-addon" class="link" hidden>Remove model add-on</button>
+            </div>
+        </details>
         <label>Processor threads
             <select id="threads"></select>
         </label>
@@ -223,6 +251,7 @@
             <span id="reference-photo-path" class="path"></span>
             <button id="remove-reference-photo" class="link" hidden>Remove</button>
         </div>
+        <div id="estimate"></div>
         <button id="analyze-button" class="primary" disabled>Run detections</button>
         <progress id="analyze-progress" max="1" value="0"></progress>
         <p id="analyze-status" class="status"></p>
@@ -324,6 +353,7 @@
             document.querySelectorAll('.active').forEach((el) => el.classList.remove('active'));
             tab.classList.add('active');
             document.getElementById(tab.dataset.tab).classList.add('active');
+            if (tab.dataset.tab === 'analyze' && !speed.test && !speedTesting) runSpeedTest();
         });
     }
 
@@ -378,6 +408,20 @@
     let recordingsFolder = null;
     let resultsFolder = null;
     let analyzing = false;
+
+    const ADDON_LEVELS = ['base', 'full'];
+    let catalog = { models: [], builtin: [] };
+    let addon = { supported: false, level: null };
+    let modelSettings = { selected: [], thresholds: {} };
+    let installingAddon = false;
+    let scan = null;
+    let automaticThreads = 1;
+
+    const chosenModels = () => catalog.models.filter((m) => modelSettings.selected.includes(m.id));
+    const neededLevel = () => chosenModels().reduce((level, m) => Math.max(level, ADDON_LEVELS.indexOf(m.addon)), -1);
+    const addonMissing = () => neededLevel() > ADDON_LEVELS.indexOf(addon.level);
+    const thresholdOf = (m) => modelSettings.thresholds[m.id] ?? m.threshold;
+    const validThreshold = (value) => value > 0 && value < 1;
 
     function fillSelect (select, items, prompt) {
         select.replaceChildren(new Option(prompt, ''));
@@ -460,9 +504,13 @@
         document.getElementById('remove-' + kind + '-photo').addEventListener('click', () => setPhoto(kind, null));
     }
 
+    const detectionUnsupported = process.platform === 'darwin' && process.arch === 'x64';
+    document.getElementById('detect-unsupported').hidden = !detectionUnsupported;
+
     function updateAnalyzeButton () {
         const photoProblem = checkLocationPhoto();
-        if (!analyzing) analyzeButton.disabled = !recordingsFolder || !selected(locationSelect) || !selected(deviceSelect) || photoProblem;
+        const modelProblem = (installingAddon || addonMissing() || chosenModels().some((m) => !validThreshold(thresholdOf(m))));
+        if (!analyzing) analyzeButton.disabled = detectionUnsupported || !recordingsFolder || !selected(locationSelect) || !selected(deviceSelect) || photoProblem || modelProblem;
     }
 
     async function loadLocations () {
@@ -506,9 +554,10 @@
 
     let outputFolder = null;
 
-    function setOutputFolder (folder) {
+    function setOutputFolder ({ folder, missing }) {
         outputFolder = folder;
-        outputPath.textContent = folder;
+        outputPath.textContent = folder + (missing ? ' (not found: connect the drive or choose another save folder)' : '');
+        outputPath.classList.toggle('error', missing);
     }
 
     ipcRenderer.invoke('output-folder').then(setOutputFolder);
@@ -519,9 +568,14 @@
         threadsSelect.add(new Option('Automatic (' + automatic + ' of ' + cores + ')', 0));
         for (let n = 1; n <= cores; n++) threadsSelect.add(new Option(String(n), n));
         threadsSelect.value = String(saved);
+        automaticThreads = automatic;
+        updateEstimate();
     });
 
-    threadsSelect.addEventListener('change', () => ipcRenderer.invoke('set-threads', Number(threadsSelect.value)));
+    threadsSelect.addEventListener('change', async () => {
+        await ipcRenderer.invoke('set-threads', Number(threadsSelect.value));
+        runSpeedTest();
+    });
 
     chooseOutputButton.addEventListener('click', async () => {
         const folder = await ipcRenderer.invoke('choose-output');
@@ -534,6 +588,7 @@
         recordingsFolder = folder;
         recordingsPath.textContent = folder;
         updateAnalyzeButton();
+        scanRecordings();
     });
 
     ipcRenderer.on('analysis-progress', (_event, message) => {
@@ -542,7 +597,206 @@
     });
 
     const photoControls = () => [chooseButton, chooseOutputButton, threadsSelect, locationSelect, deviceSelect, logoutButton,
-        ...document.querySelectorAll('#analyze .step button')];
+        ...document.querySelectorAll('#analyze .step button, #model-list input')];
+
+
+    const modelList = document.getElementById('model-list');
+    const moreModelsCount = document.getElementById('more-models-count');
+    const addonWarning = document.getElementById('addon-warning');
+    const installAddonButton = document.getElementById('install-addon');
+    const addonProgress = document.getElementById('addon-progress');
+    const addonStatus = document.getElementById('addon-status');
+    const removeAddonButton = document.getElementById('remove-addon');
+    const estimate = document.getElementById('estimate');
+
+
+    function saveModelSettings () {
+        ipcRenderer.invoke('set-model-settings', modelSettings);
+    }
+
+    function renderModels () {
+        modelList.replaceChildren();
+        for (const model of catalog.models) {
+            const row = document.createElement('div');
+            row.className = 'model';
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.checked = modelSettings.selected.includes(model.id);
+            checkbox.disabled = !addon.supported;
+            checkbox.setAttribute('aria-label', model.name);
+            const text = document.createElement('div');
+            const name = document.createElement('b');
+            name.textContent = model.name;
+            text.append(name);
+            const threshold = document.createElement('label');
+            const input = document.createElement('input');
+            input.type = 'number';
+            input.min = '0.01';
+            input.max = '0.99';
+            input.step = '0.01';
+            input.value = thresholdOf(model);
+            threshold.append('Threshold', input);
+            threshold.hidden = !checkbox.checked;
+            text.append(threshold);
+            checkbox.addEventListener('change', () => {
+                modelSettings.selected = checkbox.checked ? [...modelSettings.selected, model.id] : modelSettings.selected.filter((id) => id !== model.id);
+                threshold.hidden = !checkbox.checked;
+                saveModelSettings();
+                updateModels();
+            });
+            input.addEventListener('input', () => {
+                modelSettings.thresholds[model.id] = Number(input.value);
+                input.setCustomValidity(validThreshold(Number(input.value)) ? '' : 'Between 0.01 and 0.99');
+                saveModelSettings();
+                updateModels();
+            });
+            row.append(checkbox, text);
+            modelList.append(row);
+        }
+    }
+
+    function updateModels () {
+        const chosen = chosenModels();
+        moreModelsCount.textContent = chosen.length ? '(' + chosen.length + ' selected)' : '';
+        const level = neededLevel();
+        const missing = addonMissing();
+
+        if (!addon.supported) {
+            addonWarning.textContent = 'Extra models are not available on this computer.';
+        } else if (missing) {
+            addonWarning.textContent = 'Optional model add-on is required (' + catalog.addon_sizes_gb[ADDON_LEVELS[level]] + ' GB). Models will be downloaded locally.';
+        } else if (chosen.length) {
+            addonWarning.textContent = 'Models will be downloaded locally.';
+        }
+        addonWarning.hidden = addon.supported && !missing && !chosen.length;
+
+        installAddonButton.hidden = !missing && !installingAddon;
+        installAddonButton.textContent = installingAddon ? 'Cancel download' : 'Download model add-on';
+        installAddonButton.disabled = analyzing;
+        removeAddonButton.hidden = !addon.level || installingAddon;
+        removeAddonButton.disabled = analyzing;
+        if (!installingAddon) addonStatus.textContent = addon.level ? 'Model add-on installed' + (addon.level === 'full' ? ' (with TensorFlow).' : '.') : '';
+
+        updateEstimate();
+        updateAnalyzeButton();
+    }
+
+    async function loadModels () {
+        const status = await ipcRenderer.invoke('addon-status');
+        catalog = status.models;
+        addon = status;
+        modelSettings = await ipcRenderer.invoke('model-settings');
+        modelSettings.selected = modelSettings.selected.filter((id) => catalog.models.some((m) => m.id === id));
+        renderModels();
+        updateModels();
+    }
+
+    ipcRenderer.on('addon-progress', (_event, message) => { addonStatus.textContent = message; });
+
+    installAddonButton.addEventListener('click', async () => {
+        if (installingAddon) {
+            ipcRenderer.invoke('cancel-addon');
+            return;
+        }
+        installingAddon = true;
+        addonProgress.classList.add('running');
+        addonStatus.className = 'check';
+        updateModels();
+        const result = await ipcRenderer.invoke('install-addon', ADDON_LEVELS[neededLevel()]);
+        installingAddon = false;
+        addonProgress.classList.remove('running');
+        if (result.ok) addon.level = result.level;
+        updateModels();
+        if (!result.ok) {
+            addonStatus.className = 'check error';
+            addonStatus.textContent = result.message;
+        }
+    });
+
+    removeAddonButton.addEventListener('click', async () => {
+        if (!confirm('Remove the model add-on and downloaded model files? You can download them again later.')) return;
+        removeAddonButton.disabled = true;
+        addonStatus.textContent = 'Removing...';
+        const result = await ipcRenderer.invoke('remove-addon');
+        removeAddonButton.disabled = false;
+        if (result.ok) addon.level = null;
+        updateModels();
+    });
+
+    function formatDuration (seconds) {
+        const minutes = Math.max(1, Math.round(seconds / 60));
+        if (minutes < 60) return minutes + (minutes === 1 ? ' min' : ' mins');
+        const hours = Math.round(minutes / 30) / 2;
+        return hours + (hours === 1 ? ' hour' : ' hours');
+    }
+
+    function formatSize (bytes) {
+        if (bytes < 1e9) return Math.max(1, Math.round(bytes / 1e6)) + ' MB';
+        return (bytes / 1e9).toFixed(1) + ' GB';
+    }
+
+    let speed = { test: null, learned: {} };
+    let speedTesting = false;
+
+    async function runSpeedTest () {
+        if (detectionUnsupported || analyzing) return;
+        speedTesting = true;
+        updateEstimate();
+        await ipcRenderer.invoke('speed-test');
+        speed = await ipcRenderer.invoke('speed');
+        speedTesting = false;
+        updateEstimate();
+    }
+
+    function speedFactor (key) {
+        const threads = Number(threadsSelect.value) || automaticThreads;
+        const fromRuns = (learned) => learned.factor * Math.pow(learned.threads / threads, 0.3);
+        if (speed.learned[key]) return fromRuns(speed.learned[key]);
+        if (speed.test) return speed.test.factor;
+        if (speed.learned.builtin) return fromRuns(speed.learned.builtin);
+        return 1;
+    }
+
+    function modelTime (model, audioSeconds, key) {
+        return speedFactor(key) * ((model.load_s || 0) + audioSeconds * model.cost);
+    }
+
+    function outputSize (model, audioSeconds) {
+        return (audioSeconds / model.clip_s) * (model.labels * model.bytes_per_cell + 26);
+    }
+
+    function updateEstimate () {
+        estimate.replaceChildren();
+        if (!scan) return;
+        if (!scan.readable) {
+            estimate.textContent = 'No recordings found in this folder.';
+            return;
+        }
+        let time = 0;
+        let size = 0;
+        for (const model of catalog.builtin) {
+            const audio = model.bats ? scan.bat_audio_s : scan.audio_s;
+            time += modelTime(model, audio, 'builtin');
+            size += outputSize(model, audio);
+        }
+        for (const model of chosenModels()) {
+            time += modelTime(model, scan.audio_s, model.id);
+            size += outputSize(model, scan.audio_s);
+        }
+        estimate.textContent = formatSize(scan.audio_bytes) + ' of audio. Estimated ' + formatDuration(time) + ' to run detections with ' + formatSize(size) + ' output.';
+    }
+
+    async function scanRecordings () {
+        scan = null;
+        updateEstimate();
+        if (!recordingsFolder) return;
+        estimate.textContent = 'Checking recordings...';
+        scan = await ipcRenderer.invoke('scan-recordings', recordingsFolder);
+        updateEstimate();
+    }
+
+    loadModels();
+    ipcRenderer.invoke('speed').then((saved) => { speed = saved; updateEstimate(); });
 
     analyzeButton.addEventListener('click', async () => {
         if (analyzing) {
@@ -564,7 +818,8 @@
             output: outputFolder,
             location: selected(locationSelect),
             device: selected(deviceSelect),
-            photos
+            photos,
+            extraModels: chosenModels().map((m) => ({ id: m.id, threshold: thresholdOf(m) }))
         });
 
         analyzing = false;
@@ -574,6 +829,8 @@
         analyzeStatus.textContent = result.message;
         analyzeStatus.className = result.ok ? 'status success' : 'status error';
         resultsFolder = result.ok ? result.path : null;
+        speed = await ipcRenderer.invoke('speed');
+        updateEstimate();
         showFolderButton.style.display = result.ok ? 'block' : 'none';
     });
 

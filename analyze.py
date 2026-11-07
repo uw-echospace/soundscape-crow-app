@@ -7,8 +7,10 @@ import os
 import platform
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
+import time
 import wave
 from collections import defaultdict
 
@@ -287,6 +289,74 @@ def analyze_file(models, path, file_start, results, on_progress):
                 return frames / rate, analyze_bats
 
 
+class ZooModelError(Exception):
+    pass
+
+
+def to_probabilities(scores, kind):
+    if kind == "logits":
+        return flat_sigmoid(scores)
+    if kind == "softmax":
+        exp = np.exp(scores - scores.max(axis=1, keepdims=True))
+        return exp / exp.sum(axis=1, keepdims=True)
+    return np.clip(scores, 0, 1)
+
+
+def zoo_label(label, birdnet_names):
+    label = " ".join(str(label).replace(",", ";").split())
+    return birdnet_names.get(label, label)
+
+
+def run_zoo_model(zoo, spec, files, results, threads, birdnet_names, report):
+    folder, threshold = spec["folder"], float(spec["threshold"])
+    failed, done = [], 0
+    with tempfile.TemporaryDirectory(prefix="crow-zoo-") as work:
+        with open(os.path.join(work, "files.json"), "w", encoding="utf-8") as f:
+            json.dump([path for _, path in files], f)
+        with open(os.path.join(work, "stderr.txt"), "w+", encoding="utf-8", errors="replace") as stderr:
+            process = subprocess.Popen(
+                [zoo["python"], zoo["runner"], "--model", spec["id"], "--files", os.path.join(work, "files.json"),
+                 "--out", work, "--threads", str(threads)],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr, text=True, encoding="utf-8",
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            labels, info = None, {}
+            for line in process.stdout:
+                try:
+                    message = json.loads(line)
+                except ValueError:
+                    continue
+                if message["type"] == "status":
+                    report(0, f"Loading {spec['name']} (the first time, this downloads the model)...")
+                elif message["type"] == "model":
+                    labels = [zoo_label(label, birdnet_names) for label in message["classes"]]
+                    loaded = time.perf_counter()
+                    info = {"clip_duration_s": message["clip_s"], "versions": message.get("versions", {})}
+                elif message["type"] == "segments":
+                    info.update(clip_duration_s=message["clip_s"], segment_interval_s=message["interval_s"])
+                elif message["type"] == "file":
+                    start = files[message["index"]][0]
+                    with np.load(message["npz"]) as data:
+                        starts, scores = data["starts"], data["scores"].astype("float64")
+                    os.remove(message["npz"])
+                    scores = np.nan_to_num(scores, nan=0.0)
+                    scores = to_probabilities(scores, spec["scores"])
+                    times = [start + datetime.timedelta(seconds=float(offset)) for offset in starts]
+                    results.add(folder, labels, times, scores, scores >= threshold)
+                    results.flush()
+                    done += 1
+                    report(done / len(files), None)
+                elif message["type"] == "file_error":
+                    failed.append(os.path.basename(files[message["index"]][1]))
+                    done += 1
+                    report(done / len(files), None)
+            process.wait()
+            if labels is None or done - len(failed) == 0:
+                stderr.seek(0)
+                lines = [line.strip() for line in stderr.read().splitlines() if line.strip()]
+                raise ZooModelError(lines[-1] if lines else f"exit code {process.returncode}")
+    return {**info, "files_failed": failed, "compute_s": time.perf_counter() - loaded}
+
+
 def segment_time(seconds):
     time = EPOCH + datetime.timedelta(seconds=seconds)
     fraction = f"{time.microsecond / 1e6:.4f}"[1:].rstrip("0").rstrip(".")
@@ -391,7 +461,7 @@ def read_card_files(folder):
     return config, other_files
 
 
-def write_meta(path, args, context, folder_name, recordings, first_day, last_day, photos, threads):
+def write_meta(path, args, context, folder_name, recordings, first_day, last_day, photos, threads, extra_models):
     analyzed = [r for r in recordings if r["status"] == "analyzed"]
     model_file = lambda name: {"file": name, "sha256": sha256(os.path.join(args.models, name))}
     config, other_files = read_card_files(args.input)
@@ -484,6 +554,7 @@ def write_meta(path, args, context, folder_name, recordings, first_day, last_day
                 "resampler": "soxr",
                 "resampler_quality": "HQ",
             },
+            **extra_models,
         },
         "outputs": {
             "path": "<model>/<YYYY-MM-DD>/<location>_<YYYY-MM-DD>_<HH>",
@@ -567,12 +638,47 @@ def unreadable_reason(path, error):
     return "not_16bit_mono" if isinstance(error, SkipError) else "unreadable"
 
 
+BENCHMARK_SECONDS = 20
+
+
+def benchmark(models_dir, threads):
+    """Times BirdNET + BattyBirdNET on generated 192 kHz audio, so the app can scale its time estimates to this computer."""
+    threads = threads if threads > 0 else auto_threads()
+    models = Models(models_dir, threads)
+    rate = 192000
+    noise = np.random.default_rng(0).normal(0, 0.05, rate * BENCHMARK_SECONDS)
+    with tempfile.TemporaryDirectory(prefix="crow-benchmark-") as work:
+        path = os.path.join(work, "benchmark.wav")
+        with wave.open(path, "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(rate)
+            wav.writeframes((np.clip(noise, -1, 1) * 32767).astype("<i2").tobytes())
+        start = datetime.datetime(2026, 6, 1)
+        analyze_file(models, path, start, Results(work), lambda fraction: None)
+        times = []
+        for _ in range(2):
+            began = time.perf_counter()
+            analyze_file(models, path, start, Results(work), lambda fraction: None)
+            times.append(time.perf_counter() - began)
+        emit(type="benchmark", audio_s=BENCHMARK_SECONDS, bat_audio_s=BENCHMARK_SECONDS, compute_s=min(times), threads=threads)
+
+
 def main():
+    if "--benchmark" in sys.argv:
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--benchmark", action="store_true")
+        parser.add_argument("--models", required=True)
+        parser.add_argument("--threads", type=int, default=0)
+        args = parser.parse_args()
+        return benchmark(args.models, args.threads)
+
     parser = argparse.ArgumentParser()
     for name in ("input", "output", "location", "device", "models"):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--context", default="{}")
     parser.add_argument("--threads", type=int, default=0)
+    parser.add_argument("--zoo", default=None)
     args = parser.parse_args()
     context = json.loads(args.context)
 
@@ -633,6 +739,7 @@ def main():
     parts = tempfile.TemporaryDirectory(prefix="crow-")
     results = Results(parts.name)
     analyzed = 0
+    began = time.perf_counter()
     for index, (start, path, _) in enumerate(readable):
         message = f"Detecting species in recording {index + 1} of {len(readable)}..."
         report = lambda fraction: emit(type="progress", fraction=(index + fraction) / len(readable), message=message)
@@ -649,6 +756,32 @@ def main():
     if analyzed == 0:
         return emit(type="error", message="None of the recordings could be read.")
 
+    done_records = [r for r in records.values() if r["status"] == "analyzed"]
+    audio_s = sum(r["duration_s"] for r in done_records)
+    timings = [{"model": "builtin", "audio_s": audio_s, "bat_audio_s": sum(r["duration_s"] for r in done_records if r["bats_analyzed"]),
+                "compute_s": time.perf_counter() - began}]
+
+    zoo = json.loads(args.zoo) if args.zoo else {"models": []}
+    extra_models = {}
+    files = [(start, path) for start, path, _ in readable if records[path]["status"] == "analyzed"]
+    birdnet_names = {label.split("_")[0]: label for label in models.bird_labels}
+    for number, spec in enumerate(zoo["models"], 1):
+        def report(fraction, message, number=number, spec=spec):
+            emit(type="progress", fraction=fraction, message=message or f"Running {spec['name']} ({number} of {len(zoo['models'])} extra models)...")
+        report(0, None)
+        record = {"name": spec["name"], "source": "bioacoustics-model-zoo", "zoo_model": spec["id"], "zoo_version": zoo.get("zoo_version"),
+                  "score_function": {"logits": "sigmoid", "softmax": "softmax"}.get(spec["scores"], "model_output"),
+                  "min_confidence": float(spec["threshold"])}
+        try:
+            record.update(status="completed", **run_zoo_model(zoo, spec, files, results, threads, birdnet_names, report))
+            timings.append({"model": spec["id"], "audio_s": audio_s, "compute_s": record.pop("compute_s")})
+        except (ZooModelError, OSError) as e:
+            results.pending.clear()
+            for key in [key for key in results.counts if key[0] == spec["folder"]]:
+                del results.counts[key]
+            record.update(status="failed", error=str(e))
+        extra_models[spec["folder"]] = record
+
     staging = destination + ".partial"
     shutil.rmtree(staging, ignore_errors=True)
     os.makedirs(staging)
@@ -656,11 +789,12 @@ def main():
     write_outputs(results, staging, args.location)
     parts.cleanup()
     photo_records = copy_photos(photos, staging, window)
-    write_meta(os.path.join(staging, "META.TXT"), args, context, folder_name, list(records.values()), first_day, last_day, photo_records, threads)
+    write_meta(os.path.join(staging, "META.TXT"), args, context, folder_name, list(records.values()), first_day, last_day, photo_records, threads, extra_models)
     os.rename(staging, destination)
     make_read_only(destination)
 
-    emit(type="done", path=destination, analyzed=analyzed, skipped=len(records) - analyzed)
+    emit(type="done", path=destination, analyzed=analyzed, skipped=len(records) - analyzed,
+         failed_models=[m["name"] for m in extra_models.values() if m["status"] == "failed"], timings=timings, threads=threads)
 
 
 if __name__ == "__main__":

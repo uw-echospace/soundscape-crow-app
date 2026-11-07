@@ -1,0 +1,37 @@
+{
+  "zoo_version": "e720607a8cd487d4ac5d13112cc773ceae22289b",
+  "addon_sizes_gb": { "base": 2.5, "full": 3.5 },
+  "speed_test_reference_s": 1.2,
+  "builtin": [
+    { "name": "BirdNET", "clip_s": 3, "labels": 6522, "cost": 0.012, "load_s": 1, "bytes_per_cell": 2.71, "bats": false },
+    { "name": "BattyBirdNET", "clip_s": 0.5625, "labels": 28, "cost": 0.06, "load_s": 0, "bytes_per_cell": 2.16, "bats": true }
+  ],
+  "models": [
+    { "id": "Perch2ONNX", "name": "Perch V2", "folder": "PerchV2", "addon": "base", "scores": "softmax", "threshold": 0.1,
+      "clip_s": 5, "labels": 14795, "cost": 0.035, "load_s": 30, "bytes_per_cell": 6.89 },
+    { "id": "HawkEars2", "name": "HawkEars 2", "folder": "HawkEars2", "addon": "base", "scores": "probabilities", "threshold": 0.5,
+      "clip_s": 3, "labels": 402, "cost": 0.217, "load_s": 15, "bytes_per_cell": 6.89 },
+    { "id": "HawkEars", "name": "HawkEars", "folder": "HawkEars", "addon": "base", "scores": "logits", "threshold": 0.5,
+      "clip_s": 3, "labels": 353, "cost": 0.09, "load_s": 20, "bytes_per_cell": 6.84 },
+    { "id": "HawkEars_Low_Band", "name": "HawkEars Low Band", "folder": "HawkEars-LowBand", "addon": "base", "scores": "logits", "threshold": 0.5,
+      "clip_s": 3, "labels": 4, "cost": 0.028, "load_s": 10, "bytes_per_cell": 6.89 },
+    { "id": "HawkEars_v010", "name": "HawkEars v0.1.0", "folder": "HawkEars-v0.1.0", "addon": "base", "scores": "logits", "threshold": 0.5,
+      "clip_s": 3, "labels": 333, "cost": 0.038, "load_s": 15, "bytes_per_cell": 6.97 },
+    { "id": "BirdSetConvNeXT", "name": "BirdSet ConvNeXT", "folder": "BirdSet-ConvNeXT", "addon": "base", "scores": "logits", "threshold": 0.5,
+      "clip_s": 5, "labels": 9736, "cost": 0.027, "load_s": 25, "bytes_per_cell": 2.77 },
+    { "id": "BirdSetEfficientNetB1", "name": "BirdSet EfficientNetB1", "folder": "BirdSet-EfficientNetB1", "addon": "base", "scores": "logits", "threshold": 0.5,
+      "clip_s": 5, "labels": 9736, "cost": 0.032, "load_s": 15, "bytes_per_cell": 2.75 },
+    { "id": "BirdCODE", "name": "BirdCODE", "folder": "BirdCODE", "addon": "base", "scores": "probabilities", "threshold": 0.5,
+      "clip_s": 5, "labels": 9422, "cost": 1.72, "load_s": 45, "bytes_per_cell": 6.85 },
+    { "id": "BatDetect2", "name": "BatDetect2", "folder": "BatDetect2", "addon": "base", "scores": "probabilities", "threshold": 0.5,
+      "clip_s": 10, "labels": 17, "cost": 0.565, "load_s": 10, "bytes_per_cell": 6.84 },
+    { "id": "Perch", "name": "Perch V1", "folder": "PerchV1", "addon": "full", "scores": "logits", "threshold": 0.5,
+      "clip_s": 5, "labels": 10932, "cost": 0.117, "load_s": 40, "bytes_per_cell": 2.25 },
+    { "id": "YAMNet", "name": "YAMNet", "folder": "YAMNet", "addon": "full", "scores": "probabilities", "threshold": 0.5,
+      "clip_s": 0.48, "labels": 521, "cost": 0.01, "load_s": 75, "bytes_per_cell": 4.63 },
+    { "id": "HumpbackWhale", "name": "Humpback Whale", "folder": "HumpbackWhale", "addon": "full", "scores": "logits", "threshold": 0.5,
+      "clip_s": 3.9124, "labels": 1, "cost": 0.015, "load_s": 50, "bytes_per_cell": 6.94 },
+    { "id": "MultiSpeciesWhale", "name": "Multispecies Whale", "folder": "MultiSpeciesWhale", "addon": "full", "scores": "logits", "threshold": 0.5,
+      "clip_s": 5, "labels": 12, "cost": 0.013, "load_s": 50, "bytes_per_cell": 4.73 }
+  ]
+}

@@ -15,7 +15,9 @@ The voltage reading of the AudioMoth batteries will also be displayed.
 
 The app can run detections on an AudioMoth SD card structure ready for upload to the webportal. You will be prompted to select a location and inventory item before, logging in and selecting the correct settings is essential to populate the META.TXT file properly. BirdNET 2.4 and BattyBirdNET 1.0 USA-WEST are used.
 
-Supports multithreading.
+### More models
+
+A selection of extra models from the [bioacoustics model zoo](https://github.com/kitzeslab/bioacoustics-model-zoo) can be used as well. This requires an add-on download of Python and packages, as well as the selected models (completed automatically).
 
 ## Signing in
 
@@ -23,7 +25,8 @@ The app currently requires signing in to configure AudioMoths and run detections
 
 ## OS Specifics
 
-- **macOS:** The app may be blocked on open, go to **System Settings -> Privacy & Security** and click **Open Anyway**.
+- **macOS:** The app may be blocked on open, go to **System Settings -> Privacy & Security** and click **Open Anyway**. Detection is not supported on Intel macs.
+
 - **Linux:** To connect AudioMoths, create `/etc/udev/rules.d/99-audiomoth.rules` containing:
   ```
   SUBSYSTEM=="usb", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="0002", MODE="0666"

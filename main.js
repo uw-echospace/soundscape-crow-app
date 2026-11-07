@@ -378,7 +378,13 @@ function outputFolder () {
 
 }
 
-ipcMain.handle('output-folder', () => outputFolder());
+ipcMain.handle('output-folder', () => {
+
+    const folder = outputFolder();
+    const missing = folder !== path.join(app.getPath('documents'), RESULTS_FOLDER_NAME) && !fs.existsSync(folder);
+    return { folder, missing };
+
+});
 
 ipcMain.handle('choose-output', async (event) => {
 
@@ -390,7 +396,7 @@ ipcMain.handle('choose-output', async (event) => {
 
     if (result.canceled) return null;
     fs.writeFileSync(OUTPUT_SETTING_FILE(), result.filePaths[0]);
-    return result.filePaths[0];
+    return { folder: result.filePaths[0], missing: false };
 
 });
 
@@ -417,7 +423,7 @@ ipcMain.handle('threads', () => {
 
 ipcMain.handle('set-threads', (_event, threads) => fs.writeFileSync(THREADS_SETTING_FILE(), String(threads)));
 
-ipcMain.handle('analyze', (event, { folder, output, location, device, photos }) => {
+ipcMain.handle('analyze', (event, { folder, output, location, device, photos, extraModels = [] }) => {
 
     const locationSlug = slug(location.name);
     const deviceSlug = slug(device.name);
@@ -431,6 +437,24 @@ ipcMain.handle('analyze', (event, { folder, output, location, device, photos }) 
     if (!fs.existsSync(output)) return { ok: false, message: 'The save folder could not be found: ' + output + '. Choose another save folder.' };
 
     const { command, args, models } = analyzerCommand();
+    if (benchmarkProcess) benchmarkProcess.kill();
+
+    const zooArgs = [];
+    if (extraModels.length) {
+        if (addonProcess) return { ok: false, message: 'Wait for the add-on download to finish first.' };
+        const catalog = addonModels();
+        const level = installedAddonLevel();
+        const chosen = [];
+        for (const { id, threshold } of extraModels) {
+            const model = catalog.models.find((m) => m.id === id);
+            if (!model) return { ok: false, message: 'Unknown model: ' + id };
+            if (!level || ADDON_LEVELS.indexOf(level) < ADDON_LEVELS.indexOf(model.addon)) return { ok: false, message: model.name + ' needs the model add-on. Download it before running detections.' };
+            const value = Number(threshold);
+            if (!(value > 0 && value < 1)) return { ok: false, message: 'The threshold for ' + model.name + ' must be between 0 and 1.' };
+            chosen.push({ id: model.id, name: model.name, folder: model.folder, scores: model.scores, threshold: value });
+        }
+        zooArgs.push('--zoo', JSON.stringify({ python: addonPython(), runner: path.join(addonResources(), 'zoo_runner.py'), zoo_version: catalog.zoo_version, models: chosen }));
+    }
 
     return new Promise((resolve) => {
 
@@ -439,10 +463,10 @@ ipcMain.handle('analyze', (event, { folder, output, location, device, photos }) 
         let pending = '';
 
         analysisProcess = spawn(command, [...args, '--input', folder, '--output', output, '--location', locationSlug, '--device', deviceSlug,
-            '--models', models, '--threads', String(savedThreads()), '--context', JSON.stringify({
+            '--models', models, '--threads', String(savedThreads()), ...zooArgs, '--context', JSON.stringify({
                 app: { name: app.getName(), version: app.getVersion(), platform: process.platform, arch: process.arch },
                 user, location, device, photos
-            })], { windowsHide: true });
+            })], { windowsHide: true, env: { ...process.env, ...addonEnv() } });
 
         const awake = powerSaveBlocker.start('prevent-app-suspension');
 
@@ -454,7 +478,11 @@ ipcMain.handle('analyze', (event, { folder, output, location, device, photos }) 
                 let message;
                 try { message = JSON.parse(line); } catch { continue; }
                 if (message.type === 'progress') event.sender.send('analysis-progress', message);
-                if (message.type === 'done') result = { ok: true, path: message.path, message: 'Done! ' + message.analyzed + ' recordings checked' + (message.skipped ? ' (' + message.skipped + ' could not be read)' : '') + '. Your upload folder is ready.' };
+                if (message.type === 'done') {
+                    learnFromRun(message.timings, message.threads);
+                    const failed = message.failed_models && message.failed_models.length ? ' These models could not run and are not included: ' + message.failed_models.join(', ') + '.' : '';
+                    result = { ok: true, path: message.path, message: 'Done! ' + message.analyzed + (message.analyzed === 1 ? ' recording' : ' recordings') + ' checked' + (message.skipped ? ' (' + message.skipped + ' could not be read)' : '') + '. Your upload folder is ready.' + failed };
+                }
                 if (message.type === 'error') result = { ok: false, message: message.message };
             }
         });
@@ -480,6 +508,279 @@ ipcMain.handle('cancel-analysis', () => {
     if (analysisProcess) analysisProcess.kill();
 
 });
+
+const UV_VERSION = '0.13.5';
+const UV_DOWNLOADS = {
+    'darwin-arm64': { file: 'uv-aarch64-apple-darwin.tar.gz', sha256: '743f85035a1996ecb350659e01cd9faea9709829be09b1b4b03c73eaf3c9cd73' },
+    'win32-x64': { file: 'uv-x86_64-pc-windows-msvc.zip', sha256: 'a38b8d1902b7cfbc76b423ba1bb456f623f42064cdc72628b6075b89afd1019a' },
+    'linux-x64': { file: 'uv-x86_64-unknown-linux-gnu.tar.gz', sha256: 'f68d291c75783122dad58ab77def0e13f3233f358731db5d6d7e8715603b928f' },
+    'linux-arm64': { file: 'uv-aarch64-unknown-linux-gnu.tar.gz', sha256: '4bb69cf95ed13f23713bb7bc09f241896ea0c75b7c557e615a20604b82f9c403' }
+};
+const ADDON_PYTHON_VERSION = '3.12';
+const ADDON_LEVELS = ['base', 'full'];
+
+const addonDir = () => path.join(app.getPath('userData'), 'addon');
+const addonResources = () => (app.isPackaged ? path.join(process.resourcesPath, 'addon') : path.join(__dirname, 'addon'));
+const addonPython = () => path.join(addonDir(), 'env', process.platform === 'win32' ? path.join('Scripts', 'python.exe') : path.join('bin', 'python'));
+const addonLock = (level) => path.join(addonResources(), level + '.txt');
+const addonStatusFile = () => path.join(addonDir(), 'installed.json');
+
+const fileSha256 = (file) => require('crypto').createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+
+let addonProcess = null;
+
+function addonModels () {
+
+    return JSON.parse(fs.readFileSync(path.join(addonResources(), 'models.json'), 'utf8'));
+
+}
+
+function installedAddonLevel () {
+
+    try {
+        const status = JSON.parse(fs.readFileSync(addonStatusFile(), 'utf8'));
+        if (!fs.existsSync(addonPython()) || status.lock_sha256 !== fileSha256(addonLock(status.level))) return null;
+        return status.level;
+    } catch {
+        return null;
+    }
+
+}
+
+ipcMain.handle('addon-status', () => ({
+    supported: Boolean(UV_DOWNLOADS[process.platform + '-' + process.arch]),
+    level: installedAddonLevel(),
+    models: addonModels()
+}));
+
+function runAddonCommand (command, args, env, onLine) {
+
+    return new Promise((resolve, reject) => {
+        addonProcess = spawn(command, args, { windowsHide: true, env: { ...process.env, ...env } });
+        let tail = '';
+        const read = (data) => {
+            for (const line of data.toString().split(/\r?\n/)) {
+                if (!line.trim()) continue;
+                tail = line.trim();
+                onLine(tail);
+            }
+        };
+        addonProcess.stdout.on('data', read);
+        addonProcess.stderr.on('data', read);
+        addonProcess.on('error', reject);
+        addonProcess.on('close', (code, signal) => {
+            addonProcess = null;
+            if (signal) reject(new Error('cancelled'));
+            else if (code !== 0) reject(new Error(tail));
+            else resolve();
+        });
+    });
+
+}
+
+async function downloadUv (directory) {
+
+    const download = UV_DOWNLOADS[process.platform + '-' + process.arch];
+    const response = await net.fetch('https://github.com/astral-sh/uv/releases/download/' + UV_VERSION + '/' + download.file);
+    if (!response.ok) throw new Error('Could not download the installer (' + response.status + ').');
+    const data = Buffer.from(await response.arrayBuffer());
+    if (require('crypto').createHash('sha256').update(data).digest('hex') !== download.sha256) throw new Error('The installer download was damaged. Please try again.');
+
+    const archive = path.join(directory, download.file);
+    fs.writeFileSync(archive, data);
+    await util.promisify(execFile)('tar', ['-xf', archive, '-C', directory]);
+    fs.rmSync(archive);
+
+    const name = process.platform === 'win32' ? 'uv.exe' : 'uv';
+    const found = [path.join(directory, name), path.join(directory, download.file.replace(/\.(tar\.gz|zip)$/, ''), name)].find((file) => fs.existsSync(file));
+    if (!found) throw new Error('The installer could not be unpacked.');
+    return found;
+
+}
+
+ipcMain.handle('install-addon', async (event, level) => {
+
+    if (!ADDON_LEVELS.includes(level)) return { ok: false, message: 'Unknown add-on.' };
+
+    const send = (message) => { if (!event.sender.isDestroyed()) event.sender.send('addon-progress', message); };
+    const directory = addonDir();
+    const env = { UV_CACHE_DIR: path.join(directory, 'cache'), UV_PYTHON_INSTALL_DIR: path.join(directory, 'python'), UV_NO_PROGRESS: '1' };
+
+    try {
+        fs.mkdirSync(directory, { recursive: true });
+        send('Downloading the installer...');
+        const uv = await downloadUv(directory);
+
+        if (!fs.existsSync(addonPython())) {
+            send('Downloading Python...');
+            await runAddonCommand(uv, ['venv', '--python', ADDON_PYTHON_VERSION, '--python-preference', 'only-managed', path.join(directory, 'env')], env, () => {});
+        }
+
+        send('Downloading model packages (this can take a while)...');
+        await runAddonCommand(uv, ['pip', 'sync', '--python', addonPython(), '--torch-backend', 'cpu', addonLock(level)], env, (line) => {
+            if (/^(Downloading|Downloaded|Prepared|Installed)/.test(line)) send(line);
+        });
+
+        fs.rmSync(env.UV_CACHE_DIR, { recursive: true, force: true });
+        fs.writeFileSync(addonStatusFile(), JSON.stringify({ level, lock_sha256: fileSha256(addonLock(level)), installed_utc: new Date().toISOString() }));
+        return { ok: true, level };
+    } catch (error) {
+        if (error.message === 'cancelled') return { ok: false, message: 'Download cancelled.' };
+        return { ok: false, message: 'The add-on could not be installed: ' + error.message + ' Check your internet connection and try again.' };
+    }
+
+});
+
+ipcMain.handle('cancel-addon', () => {
+
+    if (addonProcess) addonProcess.kill();
+
+});
+
+ipcMain.handle('remove-addon', async () => {
+
+    if (addonProcess || analysisProcess) return { ok: false };
+    await fs.promises.rm(addonDir(), { recursive: true, force: true });
+    return { ok: true };
+
+});
+
+const SPEED_FILE = () => path.join(app.getPath('userData'), 'speed.json');
+let speedTest = null;
+let benchmarkProcess = null;
+
+function expectedCompute (catalog, timing) {
+
+    if (timing.model === 'builtin') {
+        const [bird, bat] = catalog.builtin;
+        return timing.audio_s * bird.cost + timing.bat_audio_s * bat.cost;
+    }
+    const model = catalog.models.find((m) => m.id === timing.model);
+    return model ? timing.audio_s * model.cost : null;
+
+}
+
+function readSpeed () {
+
+    try {
+        return JSON.parse(fs.readFileSync(SPEED_FILE(), 'utf8'));
+    } catch {
+        return { learned: {} };
+    }
+
+}
+
+function learnFromRun (timings, threads) {
+
+    const catalog = addonModels();
+    const speed = readSpeed();
+    for (const timing of timings || []) {
+        const expected = expectedCompute(catalog, timing);
+        if (!expected || timing.audio_s < 60) continue;
+        const factor = timing.compute_s / expected;
+        const old = speed.learned[timing.model];
+        speed.learned[timing.model] = { factor: old ? (old.factor + factor) / 2 : factor, threads, runs: (old ? old.runs : 0) + 1 };
+    }
+    try { fs.writeFileSync(SPEED_FILE(), JSON.stringify(speed)); } catch {}
+
+}
+
+ipcMain.handle('speed', () => ({ test: speedTest, learned: readSpeed().learned }));
+
+ipcMain.handle('speed-test', () => {
+
+    if (analysisProcess || (process.platform === 'darwin' && process.arch === 'x64')) return null;
+    if (benchmarkProcess) benchmarkProcess.kill();
+
+    const { command, args, models } = analyzerCommand();
+    return new Promise((resolve) => {
+        let output = '';
+        const child = benchmarkProcess = spawn(command, [...args, '--benchmark', '--models', models, '--threads', String(savedThreads())], { windowsHide: true });
+        child.stdout.on('data', (data) => { output += data.toString(); });
+        child.on('error', () => resolve(null));
+        child.on('close', () => {
+            if (benchmarkProcess === child) benchmarkProcess = null;
+            const line = output.split('\n').find((l) => l.includes('"benchmark"'));
+            if (!line) return resolve(null);
+            const result = JSON.parse(line);
+            speedTest = { factor: result.compute_s / addonModels().speed_test_reference_s, threads: result.threads };
+            resolve(speedTest);
+        });
+    });
+
+});
+
+const MODEL_SETTINGS_FILE = () => path.join(app.getPath('userData'), 'models.json');
+
+ipcMain.handle('model-settings', () => {
+
+    try {
+        return JSON.parse(fs.readFileSync(MODEL_SETTINGS_FILE(), 'utf8'));
+    } catch {
+        return { selected: [], thresholds: {} };
+    }
+
+});
+
+ipcMain.handle('set-model-settings', (_event, settings) => fs.writeFileSync(MODEL_SETTINGS_FILE(), JSON.stringify(settings)));
+
+function wavInfo (file) {
+
+    const fd = fs.openSync(file, 'r');
+    try {
+        const header = Buffer.alloc(8192);
+        const length = fs.readSync(fd, header, 0, header.length, 0);
+        if (length < 12 || header.toString('ascii', 0, 4) !== 'RIFF' || header.toString('ascii', 8, 12) !== 'WAVE') return null;
+        let offset = 12;
+        let format = null;
+        while (offset + 8 <= length) {
+            const id = header.toString('ascii', offset, offset + 4);
+            const size = header.readUInt32LE(offset + 4);
+            if (id === 'fmt ') format = { channels: header.readUInt16LE(offset + 10), rate: header.readUInt32LE(offset + 12), bits: header.readUInt16LE(offset + 22) };
+            if (id === 'data') {
+                if (!format || format.channels !== 1 || format.bits !== 16) return null;
+                const dataBytes = Math.min(size, fs.fstatSync(fd).size - offset - 8);
+                return { rate: format.rate, seconds: dataBytes / 2 / format.rate };
+            }
+            offset += 8 + size + (size % 2);
+        }
+        return null;
+    } finally {
+        fs.closeSync(fd);
+    }
+
+}
+
+ipcMain.handle('scan-recordings', (_event, folder) => {
+
+    const summary = { files: 0, readable: 0, audio_s: 0, bat_audio_s: 0, audio_bytes: 0 };
+    const walk = (directory) => {
+        for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+            if (entry.name.startsWith('.')) continue;
+            const file = path.join(directory, entry.name);
+            if (entry.isDirectory()) walk(file);
+            else if (entry.name.toLowerCase().endsWith('.wav')) {
+                summary.files++;
+                let info = null;
+                try { info = wavInfo(file); } catch {}
+                if (!info) continue;
+                summary.readable++;
+                summary.audio_s += info.seconds;
+                summary.audio_bytes += fs.statSync(file).size;
+                if (info.rate >= 96000) summary.bat_audio_s += info.seconds;
+            }
+        }
+    };
+    try { walk(folder); } catch { return null; }
+    return summary;
+
+});
+
+const addonEnv = () => {
+    const models = path.join(addonDir(), 'models');
+    return { HF_HOME: path.join(models, 'huggingface'), TORCH_HOME: path.join(models, 'torch'), KAGGLEHUB_CACHE: path.join(models, 'kaggle'),
+        XDG_CACHE_HOME: path.join(models, 'cache'), CROW_MODEL_CACHE: path.join(models, 'zoo'), PYTHONIOENCODING: 'utf-8' };
+};
 
 ipcMain.handle('show-folder', (_event, folder) => shell.showItemInFolder(folder));
 

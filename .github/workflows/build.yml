@@ -2,14 +2,25 @@ name: Build
 
 on:
   workflow_dispatch:
-  push:
-    tags: ["v*"]
+  release:
+    types: [published]
 
 permissions:
   contents: write
 
 jobs:
+  hold:
+    if: github.event_name == 'release' && !github.event.release.prerelease
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mark as pre-release while generating artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "${{ github.event.release.tag_name }}" --repo "${{ github.repository }}" --prerelease
+
   build:
+    needs: hold
+    if: ${{ !failure() && !cancelled() }}
     strategy:
       matrix:
         os: [windows-latest, macos-26, ubuntu-latest]
@@ -25,13 +36,22 @@ jobs:
       - run: pip install -r requirements.txt pyinstaller==6.22.3
       - run: npm ci
       - run: npm run build:analyzer
-      - name: Use the tag as the app version
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Use release tag as the app version
+        if: github.event_name == 'release'
         shell: bash
-        run: npm version --no-git-tag-version --allow-same-version "${GITHUB_REF_NAME#v}"
-      - run: npm run dist -- --publish onTag
+        run: |
+          tag="${{ github.event.release.tag_name }}"
+          npm version --no-git-tag-version --allow-same-version "${tag#v}"
+      - run: npm run dist -- --publish never
+      - name: Update files in release
+        if: github.event_name == 'release'
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          shopt -s nullglob
+          gh release upload "${{ github.event.release.tag_name }}" --clobber \
+            dist/*.dmg dist/*.exe dist/*.AppImage dist/*.blockmap dist/latest*.yml
       - uses: actions/upload-artifact@v4
         with:
           name: CROW-${{ runner.os }}
@@ -39,4 +59,14 @@ jobs:
             dist/*.dmg
             dist/*.exe
             dist/*.AppImage
-            dist/*.yml
+            dist/latest*.yml
+
+  release:
+    needs: build
+    if: github.event_name == 'release' && !github.event.release.prerelease
+    runs-on: ubuntu-latest
+    steps:
+      - name: Full release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "${{ github.event.release.tag_name }}" --repo "${{ github.repository }}" --prerelease=false --latest

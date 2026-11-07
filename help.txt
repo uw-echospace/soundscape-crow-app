@@ -35,7 +35,7 @@ Q: How long do detections take?
 It depends on your computer and how much audio there is. A full SD card can take several hours. Your computer won't fall asleep while running detections, but keep it plugged in and leave it open.
 
 Q: Detection says it needs a Mac with Apple silicon.
-Detection does not work on older Intel Macs. Use a Mac with an M1 chip or newer, or a Windows or Linux computer.
+Detection does not work on older Intel Macs. To run detections, use a Mac with an M1 chip or newer, or a Windows or Linux computer.
 
 Q: Can I use my computer while detections run?
 Yes, but detection will go slower. You can press Cancel at any time and start again later. If detection is particularly slow, we recommend running it at night when you are not using your computer.
@@ -51,3 +51,12 @@ Empty or damaged recordings are skipped. Bats are only checked in recordings mad
 
 Q: How do I upload my results?
 Sign in to the webportal and upload the whole results folder.
+
+Q: What are More models?
+If you're interested, you can select the extra models you want run as part of the detection process. You will need to download the optional add-on, so internet access is required.
+
+Q: What does the threshold next to an extra model mean?
+Each model gives every short piece of audio a score from 0 to 1 for every species. The summary file counts a species when its score is at or above the threshold. A higher threshold means fewer, more certain detections. The full scores file always keeps every score, whatever threshold you choose.
+
+Q: How do I free up space used by extra models?
+Open More models on the Detect Species tab and press Remove model add-on. This deletes the add-on and the downloaded model files. Your results are not affected.

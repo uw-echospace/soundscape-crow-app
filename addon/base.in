@@ -1,0 +1,16 @@
+bioacoustics-model-zoo @ https://github.com/kitzeslab/bioacoustics-model-zoo/archive/e720607a8cd487d4ac5d13112cc773ceae22289b.zip
+opensoundscape==0.13.2
+ai-edge-litert
+huggingface-hub
+torch
+torchaudio
+torchvision
+timm
+transformers
+britekit
+batdetect2==2.0.0b3
+birdnames
+sound-event-detection @ https://github.com/earthspecies/sound-event-detection/archive/617c6408fdd1b56c3873ef2d17006ffbaee61783.zip
+hawkears==2.3.0
+opencv-python-headless
+onnxruntime
