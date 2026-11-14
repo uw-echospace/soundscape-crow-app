@@ -496,7 +496,7 @@
         updateAnalyzeButton();
     }
 
-    for (const [kind, title] of [['location', 'Choose the location photo'], ['reference', 'Choose the reference photo']]) {
+    for (const [kind, title] of [['location', 'Upload AudioMoth photo'], ['reference', 'Upload surroundings photo']]) {
         document.getElementById('choose-' + kind + '-photo').addEventListener('click', async () => {
             const photo = await ipcRenderer.invoke('choose-photo', title);
             if (photo) setPhoto(kind, photo);
