@@ -1,7 +1,7 @@
 {
   "name": "stf-am-gui",
   "productName": "CROW",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Community Recording Online Workflow app for Seattle Soundscape",
   "main": "main.js",
   "private": true,

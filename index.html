@@ -354,6 +354,7 @@
             tab.classList.add('active');
             document.getElementById(tab.dataset.tab).classList.add('active');
             if (tab.dataset.tab === 'analyze' && !speed.test && !speedTesting) runSpeedTest();
+            if (tab.dataset.tab === 'analyze') refreshPortal();
         });
     }
 
@@ -513,43 +514,76 @@
         if (!analyzing) analyzeButton.disabled = detectionUnsupported || !recordingsFolder || !selected(locationSelect) || !selected(deviceSelect) || photoProblem || modelProblem;
     }
 
-    async function loadLocations () {
-        fillSelect(locationSelect, [], 'Loading...');
-        fillSelect(deviceSelect, [], 'Choose a location first');
-        updateAnalyzeButton();
+    function restore (select, id) {
+        const index = [...select.options].findIndex((option) => option.item && option.item.id === id);
+        if (index > 0) select.selectedIndex = index;
+        return index > 0;
+    }
+
+    async function loadLocations (quiet) {
+        const previous = selected(locationSelect);
+        if (!quiet) {
+            fillSelect(locationSelect, [], 'Loading...');
+            fillSelect(deviceSelect, [], 'Choose a location first');
+            updateAnalyzeButton();
+        }
         const locations = await portal('locations');
+        if (quiet && selected(locationSelect) !== previous) return;
         if (locations.error) {
+            if (quiet) return;
             fillSelect(locationSelect, [], 'Not available');
             if (!locations.signedOut) setAnalyzeMessage(locations.error, true);
             return;
         }
+        if (quiet && JSON.stringify(locations) === JSON.stringify([...locationSelect.options].slice(1).map((option) => option.item))) {
+            return loadAudioMoths(true);
+        }
         fillSelect(locationSelect, locations, locations.length ? 'Choose a location' : 'None checked out to you');
         if (locations.length === 0) setAnalyzeMessage('No AudioMoths currently checked out.', true);
         else if (analyzeStatus.className === 'status error') setAnalyzeMessage('');
-        if (locations.length === 1) {
-            locationSelect.selectedIndex = 1;
-            loadAudioMoths();
-        }
+        if (previous && restore(locationSelect, previous.id)) return loadAudioMoths(true);
+        if (locations.length === 1) locationSelect.selectedIndex = 1;
+        loadAudioMoths();
     }
 
-    async function loadAudioMoths () {
+    async function loadAudioMoths (quiet) {
         const location = selected(locationSelect);
-        fillSelect(deviceSelect, [], location ? 'Loading...' : 'Choose a location first');
-        updateAnalyzeButton();
+        const previous = selected(deviceSelect);
+        if (!quiet || !location) {
+            fillSelect(deviceSelect, [], location ? 'Loading...' : 'Choose a location first');
+            updateAnalyzeButton();
+        }
         if (!location) return;
         const audiomoths = await portal('audiomoths', location.id);
-        if (selected(locationSelect) !== location) return;
+        if (selected(locationSelect) !== location || (quiet && selected(deviceSelect) !== previous)) return;
         if (audiomoths.error) {
+            if (quiet) return;
             fillSelect(deviceSelect, [], 'Not available');
             if (!audiomoths.signedOut) setAnalyzeMessage(audiomoths.error, true);
             return;
         }
+        if (quiet && JSON.stringify(audiomoths) === JSON.stringify([...deviceSelect.options].slice(1).map((option) => option.item))) return;
         fillSelect(deviceSelect, audiomoths, audiomoths.length ? 'Choose an AudioMoth' : 'None at this location');
-        if (audiomoths.length === 1) deviceSelect.selectedIndex = 1;
+        if (!(previous && restore(deviceSelect, previous.id)) && audiomoths.length === 1) deviceSelect.selectedIndex = 1;
         updateAnalyzeButton();
     }
 
-    locationSelect.addEventListener('change', loadAudioMoths);
+    let refreshing = false;
+
+    async function refreshPortal () {
+        if (refreshing || analyzing || !login.classList.contains('hidden') || !navigator.onLine) return;
+        refreshing = true;
+        try {
+            await loadLocations(true);
+        } finally {
+            refreshing = false;
+        }
+    }
+
+    window.addEventListener('focus', refreshPortal);
+    setInterval(() => { if (document.hasFocus()) refreshPortal(); }, 60000);
+
+    locationSelect.addEventListener('change', () => loadAudioMoths());
     deviceSelect.addEventListener('change', updateAnalyzeButton);
 
     let outputFolder = null;
