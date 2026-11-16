@@ -423,11 +423,35 @@ ipcMain.handle('threads', () => {
 
 ipcMain.handle('set-threads', (_event, threads) => fs.writeFileSync(THREADS_SETTING_FILE(), String(threads)));
 
-ipcMain.handle('analyze', (event, { folder, output, location, device, photos, extraModels = [] }) => {
+async function sdCardName (folder) {
 
-    const locationSlug = slug(location.name);
-    const deviceSlug = slug(device.name);
-    if (!locationSlug || !deviceSlug) return { ok: false, message: 'This location or AudioMoth name has no letters or numbers.' };
+    const run = async (command, args) => (await util.promisify(execFile)(command, args, { timeout: 5000, windowsHide: true })).stdout;
+    try {
+        if (process.platform === 'win32') {
+            const match = /Volume in drive \w is (.+)/.exec(await run('cmd', ['/c', 'vol', path.parse(path.resolve(folder)).root.slice(0, 2)]));
+            return match ? match[1].trim() : null;
+        }
+        if (process.platform === 'linux') {
+            const label = (await run('findmnt', ['-no', 'LABEL', '--target', folder]).catch(() => '')).trim();
+            if (label) return label;
+        }
+        const mount = (await run('df', ['-P', folder])).trim().split('\n').pop().split(/\s+/).slice(5).join(' ');
+        return /^(\/Volumes|\/media|\/run\/media)\//.test(mount) ? path.basename(mount) : null;
+    } catch {
+        return null;
+    }
+
+}
+
+ipcMain.handle('analyze', async (event, { folder, output, places, notes = '', extraModels = [] }) => {
+
+    const plan = [];
+    for (const [index, { location, device, from_utc, photos }] of places.entries()) {
+        const locationSlug = slug(location.name);
+        const deviceSlug = slug(device.name);
+        if (!locationSlug || !deviceSlug) return { ok: false, message: 'The location or AudioMoth name ' + location.name + ' / ' + device.name + ' has no letters or numbers.' };
+        plan.push({ location_slug: locationSlug, device_slug: deviceSlug, location, device, from_utc: index === 0 ? null : from_utc, photos: photos || {} });
+    }
 
     if (process.platform === 'darwin' && process.arch === 'x64') {
         return { ok: false, message: 'Detection needs a Mac with Apple silicon (M1 or newer). Please use a different computer.' };
@@ -456,16 +480,18 @@ ipcMain.handle('analyze', (event, { folder, output, location, device, photos, ex
         zooArgs.push('--zoo', JSON.stringify({ python: addonPython(), runner: path.join(addonResources(), 'zoo_runner.py'), zoo_version: catalog.zoo_version, models: chosen }));
     }
 
+    const sdCard = await sdCardName(folder);
+
     return new Promise((resolve) => {
 
         let result = { ok: false, message: 'Detection stopped unexpectedly.' };
         let stderr = '';
         let pending = '';
 
-        analysisProcess = spawn(command, [...args, '--input', folder, '--output', output, '--location', locationSlug, '--device', deviceSlug,
+        analysisProcess = spawn(command, [...args, '--input', folder, '--output', output, '--plan', JSON.stringify(plan),
             '--models', models, '--threads', String(savedThreads()), ...zooArgs, '--context', JSON.stringify({
                 app: { name: app.getName(), version: app.getVersion(), platform: process.platform, arch: process.arch },
-                user, location, device, photos
+                user, notes: String(notes).trim() || null, sd_card_name: sdCard
             })], { windowsHide: true, env: { ...process.env, ...addonEnv() } });
 
         const awake = powerSaveBlocker.start('prevent-app-suspension');
@@ -481,7 +507,7 @@ ipcMain.handle('analyze', (event, { folder, output, location, device, photos, ex
                 if (message.type === 'done') {
                     learnFromRun(message.timings, message.threads);
                     const failed = message.failed_models && message.failed_models.length ? ' These models could not run and are not included: ' + message.failed_models.join(', ') + '.' : '';
-                    result = { ok: true, path: message.path, message: 'Done! ' + message.analyzed + (message.analyzed === 1 ? ' recording' : ' recordings') + ' checked' + (message.skipped ? ' (' + message.skipped + ' could not be read)' : '') + '. Your upload folder is ready.' + failed };
+                    result = { ok: true, path: message.path, message: 'Done! ' + message.analyzed + (message.analyzed === 1 ? ' recording' : ' recordings') + ' checked' + (message.skipped ? ' (' + message.skipped + ' could not be read)' : '') + '. ' + (message.paths.length === 1 ? 'Your upload folder is ready.' : 'Your ' + message.paths.length + ' upload folders are ready.') + failed };
                 }
                 if (message.type === 'error') result = { ok: false, message: message.message };
             }
@@ -724,6 +750,29 @@ ipcMain.handle('model-settings', () => {
 
 ipcMain.handle('set-model-settings', (_event, settings) => fs.writeFileSync(MODEL_SETTINGS_FILE(), JSON.stringify(settings)));
 
+const COMMENT_TIME_PATTERN = /Recorded at (\d\d):(\d\d):(\d\d) (\d\d)\/(\d\d)\/(\d{4}) \(UTC(?:([+-]\d{1,2})(?::(\d\d))?)?\)/;
+const FILENAME_TIME_PATTERN = /(\d{8})_(\d{6})/;
+
+function recordingStart (file, header) {
+
+    const comment = header.subarray(0, 4096).indexOf('ICMT');
+    if (comment >= 0 && comment + 8 <= header.length) {
+        const text = header.subarray(comment + 8, comment + 8 + header.readUInt32LE(comment + 4)).toString('latin1').split('\0')[0];
+        const match = COMMENT_TIME_PATTERN.exec(text);
+        if (match) {
+            const [hh, mm, ss, day, month, year] = match.slice(1, 7).map(Number);
+            const offsetHours = parseInt(match[7] || '0', 10);
+            const offsetMinutes = offsetHours * 60 + parseInt(match[8] || '0', 10) * (offsetHours >= 0 ? 1 : -1);
+            return Date.UTC(year, month - 1, day, hh, mm, ss) - offsetMinutes * 60000;
+        }
+    }
+    const match = FILENAME_TIME_PATTERN.exec(path.basename(file));
+    if (!match) return null;
+    const [d, t] = [match[1], match[2]];
+    return Date.UTC(+d.slice(0, 4), +d.slice(4, 6) - 1, +d.slice(6, 8), +t.slice(0, 2), +t.slice(2, 4), +t.slice(4, 6));
+
+}
+
 function wavInfo (file) {
 
     const fd = fs.openSync(file, 'r');
@@ -740,7 +789,7 @@ function wavInfo (file) {
             if (id === 'data') {
                 if (!format || format.channels !== 1 || format.bits !== 16) return null;
                 const dataBytes = Math.min(size, fs.fstatSync(fd).size - offset - 8);
-                return { rate: format.rate, seconds: dataBytes / 2 / format.rate };
+                return { rate: format.rate, seconds: dataBytes / 2 / format.rate, start: recordingStart(file, header.subarray(0, length)) };
             }
             offset += 8 + size + (size % 2);
         }
@@ -753,7 +802,7 @@ function wavInfo (file) {
 
 ipcMain.handle('scan-recordings', (_event, folder) => {
 
-    const summary = { files: 0, readable: 0, audio_s: 0, bat_audio_s: 0, audio_bytes: 0 };
+    const summary = { files: 0, readable: 0, audio_s: 0, bat_audio_s: 0, audio_bytes: 0, recordings: [] };
     const walk = (directory) => {
         for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
             if (entry.name.startsWith('.')) continue;
@@ -768,10 +817,12 @@ ipcMain.handle('scan-recordings', (_event, folder) => {
                 summary.audio_s += info.seconds;
                 summary.audio_bytes += fs.statSync(file).size;
                 if (info.rate >= 96000) summary.bat_audio_s += info.seconds;
+                if (info.start !== null && Number.isFinite(info.start)) summary.recordings.push({ start: info.start, seconds: info.seconds, bats: info.rate >= 96000, bytes: fs.statSync(file).size });
             }
         }
     };
     try { walk(folder); } catch { return null; }
+    summary.recordings.sort((a, b) => a.start - b.start);
     return summary;
 
 });

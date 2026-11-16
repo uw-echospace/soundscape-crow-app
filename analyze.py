@@ -211,6 +211,7 @@ class SkipError(Exception):
 class Results:
     def __init__(self, parts_dir):
         self.parts_dir = parts_dir
+        self.period = 0
         self.labels = {}
         self.counts = {}
         self.parts = defaultdict(list)
@@ -220,14 +221,14 @@ class Results:
         self.labels[folder] = labels
         quantized = np.rint(scores * SCORE_SCALE).astype("uint16")
         for row, time in enumerate(times):
-            self.pending[(folder, time.date(), time.hour)].append((time, quantized[row], detected[row]))
+            self.pending[(self.period, folder, time.date(), time.hour)].append((time, quantized[row], detected[row]))
 
     def flush(self):
         for key, rows in self.pending.items():
             if key not in self.counts:
-                self.counts[key] = np.zeros(len(self.labels[key[0]]), dtype="int64")
+                self.counts[key] = np.zeros(len(self.labels[key[1]]), dtype="int64")
             self.counts[key] += np.sum([d for _, _, d in rows], axis=0)
-            part = os.path.join(self.parts_dir, f"{len(self.parts[key])}_{key[0]}_{key[1]}_{key[2]:02d}.npz")
+            part = os.path.join(self.parts_dir, f"{len(self.parts[key])}_{key[0]}_{key[1]}_{key[2]}_{key[3]:02d}.npz")
             np.savez(part, times=np.array([(t - EPOCH).total_seconds() for t, _, _ in rows]), scores=np.stack([r for _, r, _ in rows]))
             self.parts[key].append(part)
         self.pending.clear()
@@ -312,7 +313,7 @@ def run_zoo_model(zoo, spec, files, results, threads, birdnet_names, report):
     failed, done = [], 0
     with tempfile.TemporaryDirectory(prefix="crow-zoo-") as work:
         with open(os.path.join(work, "files.json"), "w", encoding="utf-8") as f:
-            json.dump([path for _, path in files], f)
+            json.dump([path for _, path, _ in files], f)
         with open(os.path.join(work, "stderr.txt"), "w+", encoding="utf-8", errors="replace") as stderr:
             process = subprocess.Popen(
                 [zoo["python"], zoo["runner"], "--model", spec["id"], "--files", os.path.join(work, "files.json"),
@@ -334,7 +335,7 @@ def run_zoo_model(zoo, spec, files, results, threads, birdnet_names, report):
                 elif message["type"] == "segments":
                     info.update(clip_duration_s=message["clip_s"], segment_interval_s=message["interval_s"])
                 elif message["type"] == "file":
-                    start = files[message["index"]][0]
+                    start, _, results.period = files[message["index"]]
                     with np.load(message["npz"]) as data:
                         starts, scores = data["starts"], data["scores"].astype("float64")
                     os.remove(message["npz"])
@@ -363,9 +364,9 @@ def segment_time(seconds):
     return time.strftime("%Y-%m-%dT%H:%M:%S") + fraction + "Z"
 
 
-def write_outputs(results, output, location):
-    for key in sorted(results.counts):
-        folder, date, hour = key
+def write_outputs(results, output, location, period):
+    for key in sorted(k for k in results.counts if k[0] == period):
+        _, folder, date, hour = key
         day = date.isoformat()
         directory = os.path.join(output, folder, day)
         os.makedirs(directory, exist_ok=True)
@@ -461,11 +462,11 @@ def read_card_files(folder):
     return config, other_files
 
 
-def write_meta(path, args, context, folder_name, recordings, first_day, last_day, photos, threads, extra_models):
+def write_meta(path, args, context, place, part, folder_name, recordings, first_day, last_day, photos, threads, extra_models):
     analyzed = [r for r in recordings if r["status"] == "analyzed"]
     model_file = lambda name: {"file": name, "sha256": sha256(os.path.join(args.models, name))}
     config, other_files = read_card_files(args.input)
-    location, device = context.get("location") or {}, context.get("device") or {}
+    location, device = place.get("location") or {}, place.get("device") or {}
     meta = {
         "format_version": 1,
         "folder": folder_name,
@@ -481,18 +482,20 @@ def write_meta(path, args, context, folder_name, recordings, first_day, last_day
             },
         },
         "user": context.get("user"),
-        "location": {"slug": args.location, "portal_id": location.get("id"), "name": location.get("name"),
+        "notes": context.get("notes"),
+        "location": {"slug": place["location_slug"], "portal_id": location.get("id"), "name": location.get("name"),
                      "lat": location.get("lat"), "lon": location.get("lon")},
-        "device": {"slug": args.device, "portal_id": device.get("id"), "name": device.get("name"),
+        "device": {"slug": place["device_slug"], "portal_id": device.get("id"), "name": device.get("name"),
                    "lat": device.get("lat"), "lon": device.get("lon"),
                    "checked_out_at": device.get("checked_out_at"),
                    "audiomoth_ids": sorted({r["device_id"] for r in recordings if r["device_id"]})},
         "deployment": {
             "start_date": first_day.isoformat(),
             "end_date": last_day.isoformat(),
-            "first_recording_start_utc": min(r["start_utc"] for r in analyzed),
-            "last_recording_end_utc": max(r["end_utc"] for r in analyzed),
+            "first_recording_start_utc": min((r["start_utc"] for r in analyzed), default=None),
+            "last_recording_end_utc": max((r["end_utc"] for r in analyzed), default=None),
             "time_zone": "UTC",
+            **({"part": part} if part else {}),
         },
         "recordings": {
             "found": len(recordings),
@@ -502,7 +505,7 @@ def write_meta(path, args, context, folder_name, recordings, first_day, last_day
             "total_duration_s": round(sum(r["duration_s"] for r in analyzed), 3),
             "files": recordings,
         },
-        "sd_card": {"config": config, "other_files": other_files},
+        "sd_card": {"name": context.get("sd_card_name"), "config": config, "other_files": other_files},
         "photos": photos,
         "models": {
             BIRD_MODEL_FOLDER: {
@@ -674,24 +677,33 @@ def main():
         return benchmark(args.models, args.threads)
 
     parser = argparse.ArgumentParser()
-    for name in ("input", "output", "location", "device", "models"):
+    for name in ("input", "output", "plan", "models"):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--context", default="{}")
     parser.add_argument("--threads", type=int, default=0)
     parser.add_argument("--zoo", default=None)
     args = parser.parse_args()
     context = json.loads(args.context)
+    plan = json.loads(args.plan)
 
-    for label, value in (("Location", args.location), ("Device", args.device)):
-        if not SLUG_PATTERN.match(value):
-            return emit(type="error", message=f"{label} can only contain letters, numbers and hyphens.")
+    for place in plan:
+        for label, value in (("Location", place["location_slug"]), ("Device", place["device_slug"])):
+            if not SLUG_PATTERN.match(value):
+                return emit(type="error", message=f"{label} can only contain letters, numbers and hyphens.")
+    starts = [parse_utc(place["from_utc"]).replace(tzinfo=None) if place.get("from_utc") else None for place in plan]
+    if any(start is None for start in starts[1:]) or any(a >= b for a, b in zip(starts[1:], starts[2:])):
+        return emit(type="error", message="Each location's first recording must be later than the location before it.")
+
+    def period_of(start):
+        return max(i for i, begin in enumerate(starts) if begin is None or start >= begin)
 
     recordings = find_recordings(args.input)
     if not recordings:
         return emit(type="error", message="No AudioMoth recordings (.WAV files) were found in that folder.")
 
-    readable, records = [], {}
+    readable, records, periods = [], {}, {}
     for start, path, comment in recordings:
+        periods[path] = period_of(start)
         record = records[path] = {
             "file": os.path.relpath(path, args.input),
             "size_bytes": os.path.getsize(path),
@@ -718,19 +730,28 @@ def main():
     if not readable:
         return emit(type="error", message="None of the recordings could be read.")
 
-    first_day = min(start for start, _, _ in readable).date()
-    last_day = max(start + datetime.timedelta(seconds=max(duration - 1, 0)) for start, _, duration in readable).date()
-    folder_name = f"{args.location}_{args.device}_{first_day.isoformat()}_{last_day.isoformat()}"
-    destination = os.path.join(args.output, folder_name)
-    if os.path.exists(destination):
-        return emit(type="error", message=f"A results folder with this name already exists: {destination}. Move or rename it, then try again.")
-
-    photos = context.get("photos") or {}
-    window = photo_window(min(start for start, _, _ in readable))
-    if photos.get("location"):
-        problem = check_location_photo(photos["location"], window)
-        if problem:
-            return emit(type="error", message=problem)
+    parts_info = []
+    for index, place in enumerate(plan):
+        mine = [(start, path, duration) for start, path, duration in readable if periods[path] == index]
+        if not mine:
+            name = f"{place['location'].get('name')} / {place['device'].get('name')}"
+            return emit(type="error", message=f"No readable recordings fall in the time for {name}.")
+        first_day = min(start for start, _, _ in mine).date()
+        last_day = max(start + datetime.timedelta(seconds=max(duration - 1, 0)) for start, _, duration in mine).date()
+        folder_name = f"{place['location_slug']}_{place['device_slug']}_{first_day.isoformat()}_{last_day.isoformat()}"
+        destination = os.path.join(args.output, folder_name)
+        if os.path.exists(destination):
+            return emit(type="error", message=f"A results folder with this name already exists: {destination}. Move or rename it, then try again.")
+        if any(info["folder_name"] == folder_name for info in parts_info):
+            return emit(type="error", message=f"Two locations would make the same results folder ({folder_name}). Use a different location, AudioMoth, or time.")
+        window = photo_window(min(start for start, _, _ in mine))
+        location_photo = (place.get("photos") or {}).get("location")
+        if location_photo:
+            problem = check_location_photo(location_photo, window)
+            if problem:
+                return emit(type="error", message=(f"Location {index + 1}: " if len(plan) > 1 else "") + problem)
+        parts_info.append({"first_day": first_day, "last_day": last_day, "window": window,
+                           "folder_name": folder_name, "destination": destination})
 
     emit(type="progress", fraction=0, message="Loading models...")
     threads = args.threads if args.threads > 0 else auto_threads()
@@ -743,6 +764,7 @@ def main():
     for index, (start, path, _) in enumerate(readable):
         message = f"Detecting species in recording {index + 1} of {len(readable)}..."
         report = lambda fraction: emit(type="progress", fraction=(index + fraction) / len(readable), message=message)
+        results.period = periods[path]
         try:
             _, bats_analyzed = analyze_file(models, path, start, results, report)
         except (wave.Error, SkipError, ValueError, EOFError, OSError) as e:
@@ -763,7 +785,7 @@ def main():
 
     zoo = json.loads(args.zoo) if args.zoo else {"models": []}
     extra_models = {}
-    files = [(start, path) for start, path, _ in readable if records[path]["status"] == "analyzed"]
+    files = [(start, path, periods[path]) for start, path, _ in readable if records[path]["status"] == "analyzed"]
     birdnet_names = {label.split("_")[0]: label for label in models.bird_labels}
     for number, spec in enumerate(zoo["models"], 1):
         def report(fraction, message, number=number, spec=spec):
@@ -777,23 +799,34 @@ def main():
             timings.append({"model": spec["id"], "audio_s": audio_s, "compute_s": record.pop("compute_s")})
         except (ZooModelError, OSError) as e:
             results.pending.clear()
-            for key in [key for key in results.counts if key[0] == spec["folder"]]:
+            for key in [key for key in results.counts if key[1] == spec["folder"]]:
                 del results.counts[key]
             record.update(status="failed", error=str(e))
         extra_models[spec["folder"]] = record
 
-    staging = destination + ".partial"
-    shutil.rmtree(staging, ignore_errors=True)
-    os.makedirs(staging)
     emit(type="progress", fraction=1, message="Writing results...")
-    write_outputs(results, staging, args.location)
+    for index, (place, info) in enumerate(zip(plan, parts_info)):
+        staging = info["destination"] + ".partial"
+        shutil.rmtree(staging, ignore_errors=True)
+        os.makedirs(staging)
+        write_outputs(results, staging, place["location_slug"], index)
+        photo_records = copy_photos(place.get("photos") or {}, staging, info["window"])
+        mine = [r for path, r in records.items() if periods[path] == index]
+        names = {os.path.basename(r["file"]) for r in mine}
+        part_models = {folder: {**m, **({"files_failed": [f for f in m["files_failed"] if f in names]} if "files_failed" in m else {})}
+                       for folder, m in extra_models.items()}
+        part = None
+        if len(plan) > 1:
+            part = {"number": index + 1, "of": len(plan), "from_utc": place.get("from_utc"),
+                    "to_utc": plan[index + 1]["from_utc"] if index + 1 < len(plan) else None,
+                    "folders": [p["folder_name"] for p in parts_info]}
+        write_meta(os.path.join(staging, "META.TXT"), args, context, place, part, info["folder_name"], mine,
+                   info["first_day"], info["last_day"], photo_records, threads, part_models)
+        os.rename(staging, info["destination"])
+        make_read_only(info["destination"])
     parts.cleanup()
-    photo_records = copy_photos(photos, staging, window)
-    write_meta(os.path.join(staging, "META.TXT"), args, context, folder_name, list(records.values()), first_day, last_day, photo_records, threads, extra_models)
-    os.rename(staging, destination)
-    make_read_only(destination)
 
-    emit(type="done", path=destination, analyzed=analyzed, skipped=len(records) - analyzed,
+    emit(type="done", path=parts_info[0]["destination"], paths=[p["destination"] for p in parts_info], analyzed=analyzed, skipped=len(records) - analyzed,
          failed_models=[m["name"] for m in extra_models.values() if m["status"] == "failed"], timings=timings, threads=threads)
 
 
