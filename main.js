@@ -443,15 +443,18 @@ async function sdCardName (folder) {
 
 }
 
-ipcMain.handle('analyze', async (event, { folder, output, places, notes = '', extraModels = [] }) => {
+ipcMain.handle('analyze', async (event, { folder, output, offline = false, places, notes = '', extraModels = [] }) => {
 
     const plan = [];
+    if (offline) places = [];
+    else if (!user) return { ok: false, message: 'You have been signed out. Please sign in again.' };
     for (const [index, { location, device, from_utc, photos }] of places.entries()) {
         const locationSlug = slug(location.name);
         const deviceSlug = slug(device.name);
         if (!locationSlug || !deviceSlug) return { ok: false, message: 'The location or AudioMoth name ' + location.name + ' / ' + device.name + ' has no letters or numbers.' };
         plan.push({ location_slug: locationSlug, device_slug: deviceSlug, location, device, from_utc: index === 0 ? null : from_utc, photos: photos || {} });
     }
+    if (offline) plan.push({ location_slug: 'NotForUpload', device_slug: 'NotForUpload', location: {}, device: {}, from_utc: null, photos: {} });
 
     if (process.platform === 'darwin' && process.arch === 'x64') {
         return { ok: false, message: 'Detection needs a Mac with Apple silicon (M1 or newer). Please use a different computer.' };
@@ -488,7 +491,7 @@ ipcMain.handle('analyze', async (event, { folder, output, places, notes = '', ex
         let stderr = '';
         let pending = '';
 
-        analysisProcess = spawn(command, [...args, '--input', folder, '--output', output, '--plan', JSON.stringify(plan),
+        analysisProcess = spawn(command, [...args, '--input', folder, '--output', output, '--plan', JSON.stringify(plan), ...(offline ? ['--offline'] : []),
             '--models', models, '--threads', String(savedThreads()), ...zooArgs, '--context', JSON.stringify({
                 app: { name: app.getName(), version: app.getVersion(), platform: process.platform, arch: process.arch },
                 user, notes: String(notes).trim() || null, sd_card_name: sdCard
@@ -507,7 +510,7 @@ ipcMain.handle('analyze', async (event, { folder, output, places, notes = '', ex
                 if (message.type === 'done') {
                     learnFromRun(message.timings, message.threads);
                     const failed = message.failed_models && message.failed_models.length ? ' These models could not run and are not included: ' + message.failed_models.join(', ') + '.' : '';
-                    result = { ok: true, path: message.path, message: 'Done! ' + message.analyzed + (message.analyzed === 1 ? ' recording' : ' recordings') + ' checked' + (message.skipped ? ' (' + message.skipped + ' could not be read)' : '') + '. ' + (message.paths.length === 1 ? 'Your upload folder is ready.' : 'Your ' + message.paths.length + ' upload folders are ready.') + failed };
+                    result = { ok: true, path: message.path, message: 'Done! ' + message.analyzed + (message.analyzed === 1 ? ' recording' : ' recordings') + ' checked' + (message.skipped ? ' (' + message.skipped + ' could not be read)' : '') + '. ' + (offline ? 'Your results folder is ready.' : message.paths.length === 1 ? 'Your upload folder is ready.' : 'Your ' + message.paths.length + ' upload folders are ready.') + failed };
                 }
                 if (message.type === 'error') result = { ok: false, message: message.message };
             }
@@ -911,7 +914,7 @@ handlePortal('logout', async () => {
 
 handlePortal('locations', async () => (await portal('/locations')).locations);
 
-handlePortal('audiomoths', async (locationID) => (await portal('/audiomoths?location_id=' + encodeURIComponent(locationID))).audiomoths);
+handlePortal('audiomoths', async (locationID) => (await portal('/audiomoths' + (locationID == null ? '' : '?location_id=' + encodeURIComponent(locationID)))).audiomoths);
 
 // App Window
 

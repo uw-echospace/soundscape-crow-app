@@ -488,6 +488,7 @@ def write_meta(path, args, context, place, part, folder_name, recordings, first_
         "device": {"slug": place["device_slug"], "portal_id": device.get("id"), "name": device.get("name"),
                    "lat": device.get("lat"), "lon": device.get("lon"),
                    "checked_out_at": device.get("checked_out_at"),
+                   "assigned_location_id": device.get("location_id"), "assigned_location_name": device.get("location_name"),
                    "audiomoth_ids": sorted({r["device_id"] for r in recordings if r["device_id"]})},
         "deployment": {
             "start_date": first_day.isoformat(),
@@ -682,6 +683,7 @@ def main():
     parser.add_argument("--context", default="{}")
     parser.add_argument("--threads", type=int, default=0)
     parser.add_argument("--zoo", default=None)
+    parser.add_argument("--offline", action="store_true")
     args = parser.parse_args()
     context = json.loads(args.context)
     plan = json.loads(args.plan)
@@ -739,6 +741,8 @@ def main():
         first_day = min(start for start, _, _ in mine).date()
         last_day = max(start + datetime.timedelta(seconds=max(duration - 1, 0)) for start, _, duration in mine).date()
         folder_name = f"{place['location_slug']}_{place['device_slug']}_{first_day.isoformat()}_{last_day.isoformat()}"
+        if args.offline:
+            folder_name = f"NotForUpload_{first_day.isoformat()}_{last_day.isoformat()}"
         destination = os.path.join(args.output, folder_name)
         if os.path.exists(destination):
             return emit(type="error", message=f"A results folder with this name already exists: {destination}. Move or rename it, then try again.")
@@ -820,8 +824,9 @@ def main():
             part = {"number": index + 1, "of": len(plan), "from_utc": place.get("from_utc"),
                     "to_utc": plan[index + 1]["from_utc"] if index + 1 < len(plan) else None,
                     "folders": [p["folder_name"] for p in parts_info]}
-        write_meta(os.path.join(staging, "META.TXT"), args, context, place, part, info["folder_name"], mine,
-                   info["first_day"], info["last_day"], photo_records, threads, part_models)
+        if not args.offline:
+            write_meta(os.path.join(staging, "META.TXT"), args, context, place, part, info["folder_name"], mine,
+                       info["first_day"], info["last_day"], photo_records, threads, part_models)
         os.rename(staging, info["destination"])
         make_read_only(info["destination"])
     parts.cleanup()

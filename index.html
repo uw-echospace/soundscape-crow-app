@@ -73,6 +73,9 @@
     #login label { color: var(--sidebar-fg); }
     #login input { width: 100%; }
     #login .primary { width: 100%; margin-top: 4px; }
+    #login .link { display: block; margin: 14px auto 0; color: var(--sidebar-fg); font-size: 14px; }
+    #offline-warning { margin: 0 0 18px; padding: 12px 14px; border: 2px solid var(--error); border-radius: 6px; background: #fdecea; color: var(--error); font-size: 15px; font-weight: 600; user-select: text; }
+    #offline-warning span { display: block; margin-top: 4px; font-size: 13px; font-weight: 400; }
     #login-status { min-height: 21px; margin: 12px 0 0; color: #ff9a92; text-align: center; user-select: text; }
     main { flex: 1; padding: 28px 32px; overflow-y: auto; }
     section { display: none; max-width: 520px; }
@@ -183,6 +186,7 @@
         </label>
         <button id="login-button" class="primary">Sign in</button>
     </form>
+    <button id="offline-button" class="link" type="button">Continue without signing in</button>
     <p id="login-status"></p>
 </div>
 <nav>
@@ -246,6 +250,7 @@
         <label>Processor threads
             <select id="threads"></select>
         </label>
+        <div id="upload-details">
         <label class="toggle"><input type="checkbox" id="advanced-mode"> Advanced Assignment (multiple locations)</label>
         <div id="places">
             <div class="place">
@@ -276,6 +281,8 @@
         <label>Notes (optional)
             <textarea id="notes" rows="3" maxlength="5000" spellcheck="true"></textarea>
         </label>
+        </div>
+        <p id="offline-warning" hidden>Not signed in: generated results will NOT be accepted by the webportal.</span></p>
         <div id="estimate"></div>
         <button id="analyze-button" class="primary" disabled>Run detections</button>
         <progress id="analyze-progress" max="1" value="0"></progress>
@@ -350,12 +357,31 @@
         passwordInput.value = '';
     }
 
+    let offline = false;
+
+    function setOffline (value) {
+        offline = value;
+        logoutButton.textContent = offline ? 'Log in' : 'Sign out';
+        document.getElementById('upload-details').hidden = offline;
+        document.getElementById('offline-warning').hidden = !offline;
+        if (offline) accountName.textContent = 'Not signed in';
+    }
+
     function signedIn (user) {
+        setOffline(false);
         accountName.textContent = 'Signed in as ' + (user.name || user.email);
         loginStatus.textContent = '';
         login.classList.add('hidden');
         loadLocations();
+        updateAnalyzeButton();
     }
+
+    document.getElementById('offline-button').addEventListener('click', () => {
+        setOffline(true);
+        loginStatus.textContent = '';
+        login.classList.add('hidden');
+        updateAnalyzeButton();
+    });
 
     loginForm.addEventListener('submit', async (event) => {
         event.preventDefault();
@@ -368,7 +394,7 @@
 
     logoutButton.addEventListener('click', async () => {
         if (analyzing) return;
-        await portal('logout');
+        if (!offline) await portal('logout');
         showLogin();
     });
 
@@ -463,7 +489,8 @@
         select.replaceChildren(new Option(prompt, ''));
         for (const item of items) {
             const coordinates = Number.isFinite(item.lat) && Number.isFinite(item.lon) ? ' (' + item.lat.toFixed(5) + ', ' + item.lon.toFixed(5) + ')' : '';
-            const option = new Option(item.name + (select.classList.contains('device') ? coordinates : ''), item.id);
+            const assigned = ' (' + (item.location_name || 'Unassigned') + ')';
+            const option = new Option(item.name + (!select.classList.contains('device') ? '' : select.dataset.all ? assigned : coordinates), item.id);
             option.item = item;
             select.add(option);
         }
@@ -493,6 +520,8 @@
     function checkLocationPhoto (place) {
         const photo = place.photos.location;
         const device = selected(place.device);
+        const advanced = advancedToggle.checked;
+        const target = advanced ? selected(place.location) : device;
         let state, text;
         if (!photo) {
             state = '';
@@ -509,15 +538,18 @@
         } else if (!device) {
             state = '';
             text = 'Choose an AudioMoth to check this photo.';
-        } else if (!Number.isFinite(device.lat) || !Number.isFinite(device.lon)) {
+        } else if (!Number.isFinite(target.lat) || !Number.isFinite(target.lon)) {
             state = 'error';
-            text = 'This AudioMoth has no location so the photo cannot be checked. Please assign a location to it on the webportal.';
+            text = advanced
+                ? 'This location has no coordinates so the photo cannot be checked. Please add them on the webportal.'
+                : 'This AudioMoth has no location so the photo cannot be checked. Please assign a location to it on the webportal.';
         } else {
-            photo.distance_m = Math.round(distanceMeters(photo.lat, photo.lon, device.lat, device.lon));
+            const what = advanced ? 'the location' : 'the AudioMoth';
+            photo.distance_m = Math.round(distanceMeters(photo.lat, photo.lon, target.lat, target.lon));
             state = photo.distance_m <= PHOTO_MAX_DISTANCE_M ? 'ok' : 'error';
             text = state === 'ok'
-                ? photo.distance_m + ' m from the AudioMoth, taken ' + new Date(photo.taken_utc).toLocaleString() + '.'
-                : 'This photo was taken ' + photo.distance_m + ' m from the AudioMoth. It must be within ' + PHOTO_MAX_DISTANCE_M + ' m.';
+                ? photo.distance_m + ' m from ' + what + ', taken ' + new Date(photo.taken_utc).toLocaleString() + '.'
+                : 'This photo was taken ' + photo.distance_m + ' m from ' + what + '. It must be within ' + PHOTO_MAX_DISTANCE_M + ' m.';
         }
         const check = place.root.querySelector('.photo-check-location');
         check.className = 'check photo-check-location ' + state;
@@ -549,9 +581,9 @@
     document.getElementById('detect-unsupported').hidden = !detectionUnsupported;
 
     function updateAnalyzeButton () {
-        const photoProblem = activePlaces().map(checkLocationPhoto).some(Boolean);
+        const photoProblem = !offline && activePlaces().map(checkLocationPhoto).some(Boolean);
         const modelProblem = (installingAddon || addonMissing() || chosenModels().some((m) => !validThreshold(thresholdOf(m))));
-        const placeProblem = checkPlaces() || activePlaces().some((place) => !selected(place.location) || !selected(place.device));
+        const placeProblem = !offline && (checkPlaces() || activePlaces().some((place) => !selected(place.location) || !selected(place.device)));
         if (!analyzing) analyzeButton.disabled = detectionUnsupported || !recordingsFolder || placeProblem || photoProblem || modelProblem;
     }
 
@@ -608,17 +640,21 @@
             updateAnalyzeButton();
         }
         if (!location) return;
-        const audiomoths = await portal('audiomoths', location.id);
-        if (selected(place.location) !== location || (quiet && selected(place.device) !== previous)) return;
+        const all = advancedToggle.checked;
+        const audiomoths = await portal('audiomoths', all ? null : location.id);
+        if (selected(place.location) !== location || all !== advancedToggle.checked || (quiet && selected(place.device) !== previous)) return;
         if (audiomoths.error) {
             if (quiet) return;
             fillSelect(place.device, [], 'Not available');
             if (!audiomoths.signedOut) setAnalyzeMessage(audiomoths.error, true);
             return;
         }
-        if (quiet && JSON.stringify(audiomoths) === JSON.stringify(listed(place.device))) return;
-        fillSelect(place.device, audiomoths, audiomoths.length ? 'Choose an AudioMoth' : 'No AudioMoth at this location. Assign an AudioMoth to this location in the webportal.');
-        if (!(previous && restore(place.device, previous.id)) && audiomoths.length === 1) place.device.selectedIndex = 1;
+        if (quiet && Boolean(place.device.dataset.all) === all && JSON.stringify(audiomoths) === JSON.stringify(listed(place.device))) return;
+        if (all) place.device.dataset.all = '1';
+        else delete place.device.dataset.all;
+        fillSelect(place.device, audiomoths, audiomoths.length ? 'Choose an AudioMoth' : all ? 'No AudioMoths checked out to you' : 'No AudioMoth at this location. Assign an AudioMoth to this location in the webportal.');
+        const only = all ? audiomoths.filter((a) => a.location_id === location.id) : audiomoths;
+        if (!(previous && restore(place.device, previous.id)) && only.length === 1) restore(place.device, only[0].id);
         updateAnalyzeButton();
     }
 
@@ -635,10 +671,10 @@
     const formatTime = (ms) => new Date(ms).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
 
     function fillTimes (place, wanted) {
-        const times = recordingTimes().filter((ms) => dayKey(ms) === place.day.value);
-        place.time.replaceChildren(...times.map((ms) => new Option(formatTime(ms), ms)));
-        const pick = times.find((ms) => ms >= wanted) ?? times[0];
-        if (pick !== undefined) place.time.value = String(pick);
+        const times = place.day.value ? recordingTimes().filter((ms) => dayKey(ms) === place.day.value) : [];
+        place.time.replaceChildren(new Option(place.day.value ? 'Choose time' : 'Choose day first', ''), ...times.map((ms) => new Option(formatTime(ms), ms)));
+        place.time.options[0].disabled = true;
+        place.time.value = times.includes(wanted) ? String(wanted) : '';
         place.time.disabled = analyzing || times.length === 0;
     }
 
@@ -650,51 +686,50 @@
             place.day.disabled = place.time.disabled = true;
             return;
         }
-        const target = times.find((ms) => ms >= wanted) ?? times.at(-1);
         const days = [...new Set(times.map(dayKey))];
-        place.day.replaceChildren(...days.map((key) => new Option(formatDay(times.find((ms) => dayKey(ms) === key)), key)));
-        place.day.value = dayKey(target);
+        place.day.replaceChildren(new Option('Choose day', ''), ...days.map((key) => new Option(formatDay(times.find((ms) => dayKey(ms) === key)), key)));
+        place.day.options[0].disabled = true;
+        place.day.value = wanted && times.includes(wanted) ? dayKey(wanted) : '';
         place.day.disabled = analyzing;
-        fillTimes(place, target);
+        fillTimes(place, wanted);
     }
 
     const startOf = (place, index) => (index === 0 ? recordingTimes()[0] : Number(place.time.value) || null);
-
-    function defaultStart () {
-        const times = recordingTimes();
-        const previous = startOf(places.at(-1), places.length - 1);
-        if (previous === undefined || previous === null) return times[0];
-        return times.find((ms) => ms > previous && dayKey(ms) !== dayKey(previous)) ?? times.find((ms) => ms > previous) ?? times.at(-1);
-    }
 
     function checkPlaces () {
         const advanced = advancedToggle.checked;
         firstHead.hidden = firstCheck.hidden = !advanced;
         if (!advanced) return false;
-        const times = recordingTimes();
+        const recordings = scan && scan.recordings ? scan.recordings : [];
+        const starts = places.map(startOf);
         let problem = false;
         places.forEach((place, index) => {
-            const start = startOf(place, index);
-            const next = index + 1 < places.length ? startOf(places[index + 1], index + 1) : Infinity;
-            const previous = index > 0 ? startOf(places[index - 1], index - 1) : null;
+            const start = starts[index];
+            const previous = starts.slice(0, index).filter(Boolean).at(-1);
+            const next = starts.slice(index + 1).find((ms) => ms && ms > start) ?? Infinity;
             let text = '';
             let error = false;
-            if (!times.length) {
-                text = '';
-            } else if (index > 0 && (!start || (previous && start <= previous))) {
-                text = 'Must be later than location ' + index + '\'s first recording.';
+            if (!recordings.length) {
+                problem = true;
+            } else if (!start) {
+                text = 'Choose the day and time of the first recording at this location.';
+                problem = true;
+            } else if (previous && start <= previous) {
+                text = 'Must be later than the first recording at the location above.';
                 error = true;
             } else {
-                const count = times.filter((ms) => ms >= start && ms < next).length;
-                text = count + (count === 1 ? ' recording' : ' recordings') + ' from ' + formatDay(start) + ', ' + formatTime(start);
-                if (count === 0) {
+                const mine = recordings.filter((r) => r.start >= start && r.start < next);
+                if (!mine.length) {
                     text = 'No recordings in this time.';
                     error = true;
+                } else {
+                    const end = Math.max(...mine.map((r) => r.start + r.seconds * 1000));
+                    text = mine.length + (mine.length === 1 ? ' recording' : ' recordings') + ' from ' + formatDay(start) + ', ' + formatTime(start) +
+                        ' to ' + (dayKey(end) === dayKey(start) ? '' : formatDay(end) + ', ') + formatTime(end);
                 }
             }
-            if (!times.length) error = true;
             place.check.textContent = text;
-            place.check.className = 'check' + (error && text ? ' error' : '');
+            place.check.className = 'check' + (error ? ' error' : '');
             problem ||= error;
         });
         return problem;
@@ -709,7 +744,6 @@
             [...places[0].root.querySelectorAll('.step')].map((step) => step.outerHTML).join('');
         const [day, time, location, device] = root.querySelectorAll('select');
         const place = { root, day, time, location, device, check: root.querySelector('.check'), title: root.querySelector('b') };
-        const wanted = defaultStart();
         places.push(place);
         placesBox.append(root);
         for (const kind of Object.keys(PHOTO_KINDS)) {
@@ -718,13 +752,13 @@
         }
         root.querySelector('.photo-check-location').textContent = '';
         setupPhotos(place);
-        fillWhen(place, wanted);
+        fillWhen(place, null);
         if (portalLocations) fillPlaceLocations(place, portalLocations, false);
         else {
             fillSelect(location, [], 'Not available');
             fillSelect(device, [], 'Choose a location first');
         }
-        day.addEventListener('change', () => { fillTimes(place, 0); updateAnalyzeButton(); });
+        day.addEventListener('change', () => { fillTimes(place, null); updateAnalyzeButton(); });
         time.addEventListener('change', updateAnalyzeButton);
         location.addEventListener('change', () => loadAudioMoths(place));
         device.addEventListener('change', updateAnalyzeButton);
@@ -753,6 +787,7 @@
         addPlaceButton.hidden = !advanced;
         if (advanced && places.length === 1) addPlace();
         if (!advanced) for (const place of places.splice(1)) place.root.remove();
+        loadAudioMoths(places[0]);
         updateAnalyzeButton();
     }
 
@@ -762,7 +797,7 @@
     let refreshing = false;
 
     async function refreshPortal () {
-        if (refreshing || analyzing || !login.classList.contains('hidden') || !navigator.onLine) return;
+        if (refreshing || analyzing || offline || !login.classList.contains('hidden') || !navigator.onLine) return;
         refreshing = true;
         try {
             await loadLocations(true);
@@ -1019,7 +1054,7 @@
         estimate.textContent = 'Checking recordings...';
         scan = await ipcRenderer.invoke('scan-recordings', recordingsFolder);
         updateEstimate();
-        places.slice(1).forEach((place) => fillWhen(place, Number(place.time.value) || 0));
+        places.slice(1).forEach((place) => fillWhen(place, Number(place.time.value) || null));
         updateAnalyzeButton();
     }
 
@@ -1044,13 +1079,14 @@
         const result = await ipcRenderer.invoke('analyze', {
             folder: recordingsFolder,
             output: outputFolder,
-            places: activePlaces().map((place, index) => ({
+            offline,
+            places: offline ? [] : activePlaces().map((place, index) => ({
                 location: selected(place.location),
                 device: selected(place.device),
                 from_utc: index ? new Date(startOf(place, index)).toISOString().replace(/\.\d{3}Z$/, 'Z') : null,
                 photos: place.photos
             })),
-            notes: notesInput.value,
+            notes: offline ? '' : notesInput.value,
             extraModels: chosenModels().map((m) => ({ id: m.id, threshold: thresholdOf(m) }))
         });
 

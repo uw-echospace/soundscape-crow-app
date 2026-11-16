@@ -31,6 +31,12 @@ Choose the AudioMoth's SD card, or a folder you copied the SD card into. The app
 Q: My location or AudioMoth is not in the list.
 The lists come from the online webportal and only show your checked out AudioMoths. You can add additional locations on the website. You must use the same location when uploading data and in the CROW app.
 
+Q: My SD card recorded at more than one location or AudioMoth.
+Turn on Advanced Assignment (multiple locations) on the Detect Species tab. You can select when the SD card is moved to a different AudioMoth and location.
+
+Q: What are notes for?
+Notes are an optional addition to leave any information that may be important when analyzing results from the card. For example, if there was a unique phenomena occuring at the recording location, it may be useful to record that.
+
 Q: How long do detections take?
 It depends on your computer and how much audio there is. A full SD card can take several hours. Your computer won't fall asleep while running detections, but keep it plugged in and leave it open.
 
@@ -50,7 +56,7 @@ Q: Some recordings were skipped.
 Empty or damaged recordings are skipped. Bats are only checked in recordings made at 96 kHz or higher.
 
 Q: How do I upload my results?
-Sign in to the webportal and upload the whole results folder.
+Sign in to the webportal and upload the whole results folder. If you ran detections at more than one location, upload each folder.
 
 Q: What are More models?
 If you're interested, you can select the extra models you want run as part of the detection process. You will need to download the optional add-on, so internet access is required.

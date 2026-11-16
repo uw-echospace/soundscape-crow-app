@@ -4,7 +4,7 @@ The CROW app is used for configuring AudioMoth devices and running species detec
 
 ## Flashing AudioMoths
 
-After logging in, you can flash any connected AudioMoth to the preset setting with the latest firmware:
+You can flash any connected AudioMoth to the preset setting with the latest firmware:
 Sample rate: 192 kHz
 Duty cycle: 5 min recording / 5 min sleep
 Schedule: 00:00-24:00
@@ -15,13 +15,19 @@ The voltage reading of the AudioMoth batteries will also be displayed.
 
 The app can run detections on an AudioMoth SD card structure ready for upload to the webportal. You will be prompted to select a location and inventory item before, logging in and selecting the correct settings is essential to populate the META.TXT file properly. BirdNET 2.4 and BattyBirdNET 1.0 USA-WEST are used.
 
+### Multiple locations on one SD card
+
+If an SD card recorded at more than one location or AudioMoth, turn on **Advanced Assignment (multiple locations)**. CROW will make a separate upload folder per location.
+
 ### More models
 
 A selection of extra models from the [bioacoustics model zoo](https://github.com/kitzeslab/bioacoustics-model-zoo) can be used as well. This requires an add-on download of Python and packages, as well as the selected models (completed automatically).
 
 ## Signing in
 
-The app currently requires signing in to configure AudioMoths and run detections using the models. Use the same credentials as you would on the webportal.
+Use the same credentials as you would on the webportal. Signing in is required to make upload folders.
+
+You can also press **Continue without signing in** for limited functionality. Results will not be accepted by the webportal.
 
 ## OS Specifics
 
