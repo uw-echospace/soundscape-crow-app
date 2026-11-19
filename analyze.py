@@ -596,7 +596,7 @@ def photo_window(first_start):
 
 def check_location_photo(photo, window):
     if not photo.get("taken_utc"):
-        return "The location photo has no date or time. Choose another photo, or remove it."
+        return None
     taken = parse_utc(photo["taken_utc"])
     if not window[0] <= taken <= window[1]:
         when = taken.astimezone().strftime("%Y-%m-%d %H:%M")

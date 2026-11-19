@@ -526,15 +526,14 @@
         if (!photo) {
             state = '';
             text = '';
-        } else if (photo.lat === null) {
-            state = 'error';
-            text = 'This photo has no location. Turn on location for your camera, take the photo again, and choose it.';
-        } else if (!photo.taken_utc) {
-            state = 'error';
-            text = 'This photo has no date or time. Choose another photo.';
-        } else if (new Date(photo.taken_utc) > Date.now() + 5 * 60000) {
+        } else if (photo.taken_utc && new Date(photo.taken_utc) > Date.now() + 5 * 60000) {
             state = 'error';
             text = 'This photo\'s date is in the future. Check the date on your phone.';
+        } else if (photo.lat === null || !photo.taken_utc) {
+            delete photo.distance_m;
+            const missing = photo.lat === null && !photo.taken_utc ? 'location or date' : photo.lat === null ? 'location' : 'date';
+            state = 'warning';
+            text = 'This photo has no ' + missing + ' information.';
         } else if (!device) {
             state = '';
             text = 'Choose an AudioMoth to check this photo.';
