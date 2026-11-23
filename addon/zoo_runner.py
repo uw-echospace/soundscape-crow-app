@@ -103,9 +103,12 @@ def main():
             np.savez(out, starts=starts, scores=predictions.to_numpy(dtype="float32"))
             emit(type="file", index=index, npz=out)
             if not device_reported:
-                device, gpu = device_used(model, torch)
-                emit(type="device", device=device, gpu=gpu)
                 device_reported = True
+                try:
+                    device, gpu = device_used(model, torch)
+                    emit(type="device", device=device, gpu=gpu)
+                except Exception:
+                    pass
         except Exception as error:
             emit(type="file_error", index=index, error=f"{type(error).__name__}: {error}")
 
