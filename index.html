@@ -246,6 +246,7 @@
             <div id="addon">
                 <p id="addon-warning" class="check warning" hidden></p>
                 <label id="addon-gpu-option" class="toggle" hidden><input type="checkbox" id="addon-gpu"> <span id="addon-gpu-text"></span></label>
+                <p id="addon-gpu-warning" class="check warning" hidden>EXPERIMENTAL FEATURE: use with caution!</p>
                 <button id="install-addon" class="secondary" hidden></button>
                 <progress id="addon-progress"></progress>
                 <p id="addon-status" class="check"></p>
@@ -877,6 +878,7 @@
     const addonGpuOption = document.getElementById('addon-gpu-option');
     const addonGpuInput = document.getElementById('addon-gpu');
     const addonGpuText = document.getElementById('addon-gpu-text');
+    const addonGpuWarning = document.getElementById('addon-gpu-warning');
     const devicesBox = document.getElementById('devices');
 
     /* CPU or GPU */
@@ -1020,10 +1022,11 @@
         addonGpuOption.hidden = !(nvidia && addon.gpuAddonPlatform && addon.supported);
         if (nvidia) {
             addonGpuText.textContent = nvidia.driverOk
-                ? 'Use GPU (' + nvidia.name + ') for extra models (' + catalog.gpu_extra_gb + ' GB).'
+                ? 'Use GPU (' + nvidia.name + ') for extra models (' + catalog.gpu_extra_gb + ' GB). Experimental.'
                 : 'NVIDIA GPU found (' + nvidia.name + '), but its driver (' + nvidia.driver + ') is too old to use. Update the driver to use the GPU.';
             addonGpuInput.disabled = !nvidia.driverOk || installingAddon || analyzing;
         }
+        addonGpuWarning.hidden = addonGpuOption.hidden || !wantGpu();
         const switchVariant = Boolean(addon.level) && wantGpu() !== (addon.gpu === 'cuda');
 
         installAddonButton.hidden = !missing && !switchVariant && !installingAddon;
@@ -1046,8 +1049,7 @@
         const status = await ipcRenderer.invoke('addon-status');
         catalog = status.models;
         addon = status;
-        const nvidia = detectedGpu('nvidia');
-        addonGpuInput.checked = addon.gpu === 'cuda' || Boolean(!addon.level && nvidia && nvidia.driverOk);
+        addonGpuInput.checked = addon.gpu === 'cuda';
         modelSettings = await ipcRenderer.invoke('model-settings');
         modelSettings.selected = modelSettings.selected.filter((id) => catalog.models.some((m) => m.id === id));
         renderModels();
