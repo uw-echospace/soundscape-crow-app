@@ -98,7 +98,9 @@
             "zoo_runner.py",
             "models.json",
             "base.txt",
-            "full.txt"
+            "full.txt",
+            "base-cuda.txt",
+            "full-cuda.txt"
           ]
         }
       ]
@@ -125,7 +127,9 @@
             "zoo_runner.py",
             "models.json",
             "base.txt",
-            "full.txt"
+            "full.txt",
+            "base-cuda.txt",
+            "full-cuda.txt"
           ]
         }
       ],

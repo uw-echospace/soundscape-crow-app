@@ -171,6 +171,10 @@
     #addon { margin-top: 8px; }
     #addon progress { width: 100%; }
     #estimate { margin: 0 0 16px; font-size: 13px; color: var(--muted); }
+    #devices { margin: 0 0 8px; }
+    #devices p { margin: 0 0 4px; font-size: 13px; }
+    #addon-gpu-option { margin: 8px 0; font-size: 13px; }
+    #addon-gpu-option[hidden] { display: none; }
 </style>
 </head>
 <body>
@@ -241,6 +245,7 @@
             <div id="model-list"></div>
             <div id="addon">
                 <p id="addon-warning" class="check warning" hidden></p>
+                <label id="addon-gpu-option" class="toggle" hidden><input type="checkbox" id="addon-gpu"> <span id="addon-gpu-text"></span></label>
                 <button id="install-addon" class="secondary" hidden></button>
                 <progress id="addon-progress"></progress>
                 <p id="addon-status" class="check"></p>
@@ -283,6 +288,7 @@
         </label>
         </div>
         <p id="offline-warning" hidden>Not signed in: generated results will NOT be accepted by the webportal.</span></p>
+        <div id="devices"></div>
         <div id="estimate"></div>
         <button id="analyze-button" class="primary" disabled>Run detections</button>
         <progress id="analyze-progress" max="1" value="0"></progress>
@@ -868,6 +874,86 @@
     const addonStatus = document.getElementById('addon-status');
     const removeAddonButton = document.getElementById('remove-addon');
     const estimate = document.getElementById('estimate');
+    const addonGpuOption = document.getElementById('addon-gpu-option');
+    const addonGpuInput = document.getElementById('addon-gpu');
+    const addonGpuText = document.getElementById('addon-gpu-text');
+    const devicesBox = document.getElementById('devices');
+
+    /* CPU or GPU */
+
+    const detectedGpu = (kind) => (addon.hardware && addon.hardware.gpu && addon.hardware.gpu.kind === kind ? addon.hardware.gpu : null);
+    const cudaReady = () => addon.gpu === 'cuda' && addon.cudaWorks !== false;
+    const wantGpu = () => Boolean(addon.gpuAddonPlatform && detectedGpu('nvidia') && detectedGpu('nvidia').driverOk && addonGpuInput.checked);
+    const addonVariant = () => addon.gpu || 'cpu';
+
+    function expectedDevice (model) {
+        const kind = model.gpu || 'none';
+        if (kind === 'none') return 'cpu';
+        if (kind === 'cuda') return cudaReady() ? 'gpu' : 'cpu';
+        if (!cudaReady() && !detectedGpu('apple')) return 'cpu';
+        return kind === 'partial' ? 'mixed' : 'gpu';
+    }
+
+    function cpuReason (model) {
+        if (model.gpu === 'none') return 'uses only the CPU';
+        if (model.gpu === 'partial') return 'uses only the CPU';
+        if (model.gpu === 'cuda' && detectedGpu('apple')) return 'not compatible with Apple GPUs';
+        return null;
+    }
+
+    function updateDevices () {
+        const hardware = addon.hardware;
+        devicesBox.replaceChildren();
+        if (!hardware) return;
+        const line = (text, className = 'check') => {
+            const p = document.createElement('p');
+            p.className = className;
+            p.textContent = text;
+            devicesBox.append(p);
+        };
+        const gpuName = cudaReady() ? detectedGpu('nvidia').name : detectedGpu('apple') ? detectedGpu('apple').name + ' GPU' : 'GPU';
+        const groups = { cpu: ['BirdNET and BattyBirdNET'], gpu: [], mixed: [] };
+        const notes = [];
+        const chosen = chosenModels();
+        for (const model of chosen) {
+            const expected = expectedDevice(model);
+            const seen = (modelSettings.devices || {})[model.id];
+            const observed = seen && seen.variant === addonVariant() ? seen.device : null;
+            groups[observed || expected].push(model.name);
+            if (observed && observed !== expected) {
+                notes.push(model.name + ' was expected to run on the ' + (expected === 'cpu' ? 'CPU' : 'GPU') + ', but last time it ran on the ' + (observed === 'cpu' ? 'CPU' : observed === 'gpu' ? 'GPU' : 'CPU and GPU') + '.');
+            }
+        }
+        const cpuText = 'CPU (' + hardware.cpu + ', ' + hardware.cores + ' cores)';
+        if (!groups.gpu.length && !groups.mixed.length) {
+            line('Using ' + cpuText + '.');
+        } else {
+            line('Using:');
+            line(' ' + cpuText + ': ' + groups.cpu.join(', '));
+            if (groups.gpu.length) line(' ' + gpuName + ': ' + groups.gpu.join(', '));
+            if (groups.mixed.length) line(' Mostly CPU, partly ' + gpuName + ': ' + groups.mixed.join(', '));
+            const reasons = chosen.filter((m) => groups.cpu.includes(m.name) && cpuReason(m)).map((m) => m.name + ' (' + cpuReason(m) + ')');
+            notes.unshift('Base models (BirdNET, BattyBirdNET) are CPU-only' + (reasons.length ? '. ' + (reasons.length > 1 ? reasons.slice(0, -1).join(', ') + ' and ' + reasons.at(-1) : reasons[0]) : '') + ' also not GPU supported.');
+        }
+        const nvidia = detectedGpu('nvidia');
+        if (nvidia && addon.gpuAddonPlatform) {
+            if (!nvidia.driverOk) notes.push('NVIDIA GPU found (' + nvidia.name + '), but its driver (' + nvidia.driver + ') is too old for CROW to use it. Update the NVIDIA driver to run extra models on the GPU.');
+            else if (addon.gpu === 'cuda' && addon.cudaWorks === false) notes.push('The GPU version of the add-on is installed, but the GPU could not be used. Update the NVIDIA driver and download the add-on again.');
+            else if (addon.level && addon.gpu !== 'cuda' && chosen.some((m) => m.gpu && m.gpu !== 'none')) notes.push('An NVIDIA GPU was found (' + nvidia.name + '), but only the CPU version of the add-on is installed. Tick "Use GPU" under More models to switch.');
+        }
+        for (const note of notes) line(note, 'check warning');
+    }
+
+    function saveDevices (devices) {
+        if (!devices || !devices.length) return;
+        modelSettings.devices = modelSettings.devices || {};
+        for (const { name, device, gpu } of devices) {
+            const model = catalog.models.find((m) => m.name === name);
+            if (model) modelSettings.devices[model.id] = { device, gpu, variant: addonVariant() };
+        }
+        saveModelSettings();
+        updateDevices();
+    }
 
 
     function saveModelSettings () {
@@ -930,12 +1016,27 @@
         }
         addonWarning.hidden = addon.supported && !missing && !chosen.length;
 
-        installAddonButton.hidden = !missing && !installingAddon;
-        installAddonButton.textContent = installingAddon ? 'Cancel download' : 'Download model add-on';
+        const nvidia = detectedGpu('nvidia');
+        addonGpuOption.hidden = !(nvidia && addon.gpuAddonPlatform && addon.supported);
+        if (nvidia) {
+            addonGpuText.textContent = nvidia.driverOk
+                ? 'Use GPU (' + nvidia.name + ') for extra models (' + catalog.gpu_extra_gb + ' GB).'
+                : 'NVIDIA GPU found (' + nvidia.name + '), but its driver (' + nvidia.driver + ') is too old to use. Update the driver to use the GPU.';
+            addonGpuInput.disabled = !nvidia.driverOk || installingAddon || analyzing;
+        }
+        const switchVariant = Boolean(addon.level) && wantGpu() !== (addon.gpu === 'cuda');
+
+        installAddonButton.hidden = !missing && !switchVariant && !installingAddon;
+        installAddonButton.textContent = installingAddon ? 'Cancel download'
+            : missing || !switchVariant ? 'Download model add-on' : wantGpu() ? 'Switch to GPU' : 'Switch to CPU';
         installAddonButton.disabled = analyzing;
         removeAddonButton.hidden = !addon.level || installingAddon;
         removeAddonButton.disabled = analyzing;
-        if (!installingAddon) addonStatus.textContent = addon.level ? 'Model add-on installed' + (addon.level === 'full' ? ' (with TensorFlow).' : '.') : '';
+        if (!installingAddon) {
+            addonStatus.textContent = addon.level ? 'Model add-on installed' + (addon.level === 'full' ? ' (with TensorFlow)' : '') + (addon.gpu === 'cuda' ? ', GPU version' : '') + '.' : '';
+        }
+
+        updateDevices();
 
         updateEstimate();
         updateAnalyzeButton();
@@ -945,6 +1046,8 @@
         const status = await ipcRenderer.invoke('addon-status');
         catalog = status.models;
         addon = status;
+        const nvidia = detectedGpu('nvidia');
+        addonGpuInput.checked = addon.gpu === 'cuda' || Boolean(!addon.level && nvidia && nvidia.driverOk);
         modelSettings = await ipcRenderer.invoke('model-settings');
         modelSettings.selected = modelSettings.selected.filter((id) => catalog.models.some((m) => m.id === id));
         renderModels();
@@ -952,6 +1055,7 @@
     }
 
     ipcRenderer.on('addon-progress', (_event, message) => { addonStatus.textContent = message; });
+    addonGpuInput.addEventListener('change', updateModels);
 
     installAddonButton.addEventListener('click', async () => {
         if (installingAddon) {
@@ -962,14 +1066,18 @@
         addonProgress.classList.add('running');
         addonStatus.className = 'check';
         updateModels();
-        const result = await ipcRenderer.invoke('install-addon', ADDON_LEVELS[neededLevel()]);
+        const level = ADDON_LEVELS[Math.max(neededLevel(), ADDON_LEVELS.indexOf(addon.level), 0)];
+        const result = await ipcRenderer.invoke('install-addon', level, wantGpu());
         installingAddon = false;
         addonProgress.classList.remove('running');
-        if (result.ok) addon.level = result.level;
+        if (result.ok) Object.assign(addon, { level: result.level, gpu: result.gpu, cudaWorks: result.cudaWorks });
         updateModels();
         if (!result.ok) {
             addonStatus.className = 'check error';
             addonStatus.textContent = result.message;
+        } else if (result.cudaWorks === false) {
+            addonStatus.className = 'check warning';
+            addonStatus.textContent = 'The GPU version was installed but could not be used. Try updating the NVIDIA driver.';
         }
     });
 
@@ -979,7 +1087,7 @@
         addonStatus.textContent = 'Removing...';
         const result = await ipcRenderer.invoke('remove-addon');
         removeAddonButton.disabled = false;
-        if (result.ok) addon.level = null;
+        if (result.ok) Object.assign(addon, { level: null, gpu: null, cudaWorks: null });
         updateModels();
     });
 
@@ -1099,6 +1207,7 @@
         speed = await ipcRenderer.invoke('speed');
         updateEstimate();
         showFolderButton.style.display = result.ok ? 'block' : 'none';
+        if (result.ok) saveDevices(result.devices);
     });
 
     showFolderButton.addEventListener('click', () => ipcRenderer.invoke('show-folder', resultsFolder));

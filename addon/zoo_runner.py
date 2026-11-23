@@ -33,6 +33,20 @@ def load_model(bmz, name, threads):
     return getattr(bmz, name)()
 
 
+CPU_ONLY_PARTS = ("TensorFlowModelWithPytorchClassifier", "ONNXModel", "TensorFlowModel")
+
+def device_used(model, torch):
+    gpu = None
+    if torch.cuda.is_available() and torch.cuda.max_memory_allocated() > 0:
+        gpu = torch.cuda.get_device_name(0)
+    elif torch.backends.mps.is_available() and torch.mps.driver_allocated_memory() > 0:
+        gpu = "Apple Silicon"
+    cpu_parts = any(cls.__name__ in CPU_ONLY_PARTS for cls in type(model).__mro__)
+    if gpu is None:
+        return "cpu", None
+    return ("mixed" if cpu_parts else "gpu"), gpu
+
+
 def predict_options(model, batch_size):
     parameters = inspect.signature(model.predict).parameters
     open_ended = any(p.kind == p.VAR_KEYWORD for p in parameters.values())
@@ -75,6 +89,7 @@ def main():
     emit(type="model", classes=[str(c) for c in model.classes], clip_s=clip_s, versions=versions)
     options = predict_options(model, args.batch_size)
     reported = False
+    device_reported = False
 
     for index, path in enumerate(files):
         try:
@@ -87,6 +102,10 @@ def main():
             out = os.path.join(args.out, f"{index}.npz")
             np.savez(out, starts=starts, scores=predictions.to_numpy(dtype="float32"))
             emit(type="file", index=index, npz=out)
+            if not device_reported:
+                device, gpu = device_used(model, torch)
+                emit(type="device", device=device, gpu=gpu)
+                device_reported = True
         except Exception as error:
             emit(type="file_error", index=index, error=f"{type(error).__name__}: {error}")
 

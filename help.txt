@@ -64,5 +64,8 @@ If you're interested, you can select the extra models you want run as part of th
 Q: What does the threshold next to an extra model mean?
 Each model gives every short piece of audio a score from 0 to 1 for every species. The summary file counts a species when its score is at or above the threshold. A higher threshold means fewer, more certain detections. The full scores file always keeps every score, whatever threshold you choose.
 
+Q: Do detections use my computer's GPU (graphics card)?
+BirdNET and BattyBirdNET are currently CPU-only. Some extra models can use the GPU. On Apple Silicon computers this is automatic; on Windows and Linux computers with an NVIDIA graphics card you can select "Use GPU" under More models before downloading the add-on.
+
 Q: How do I free up space used by extra models?
 Open More models on the Detect Species tab and press Remove model add-on. This deletes the add-on and the downloaded model files. Your results are not affected.

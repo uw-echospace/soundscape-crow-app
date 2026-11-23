@@ -334,6 +334,8 @@ def run_zoo_model(zoo, spec, files, results, threads, birdnet_names, report):
                     info = {"clip_duration_s": message["clip_s"], "versions": message.get("versions", {})}
                 elif message["type"] == "segments":
                     info.update(clip_duration_s=message["clip_s"], segment_interval_s=message["interval_s"])
+                elif message["type"] == "device":
+                    info["device"] = {"used": message["device"], "gpu": message.get("gpu")}
                 elif message["type"] == "file":
                     start, _, results.period = files[message["index"]]
                     with np.load(message["npz"]) as data:
@@ -535,6 +537,7 @@ def write_meta(path, args, context, place, part, folder_name, recordings, first_
                 },
                 "resampler": "soxr",
                 "resampler_quality": "HQ",
+                "device": {"used": "cpu", "gpu": None},
             },
             BAT_MODEL_FOLDER: {
                 "name": "BattyBirdNET",
@@ -557,6 +560,7 @@ def write_meta(path, args, context, place, part, folder_name, recordings, first_
                 "labels_kept": "species",
                 "resampler": "soxr",
                 "resampler_quality": "HQ",
+                "device": {"used": "cpu", "gpu": None},
             },
             **extra_models,
         },
@@ -832,7 +836,10 @@ def main():
     parts.cleanup()
 
     emit(type="done", path=parts_info[0]["destination"], paths=[p["destination"] for p in parts_info], analyzed=analyzed, skipped=len(records) - analyzed,
-         failed_models=[m["name"] for m in extra_models.values() if m["status"] == "failed"], timings=timings, threads=threads)
+         failed_models=[m["name"] for m in extra_models.values() if m["status"] == "failed"], timings=timings, threads=threads,
+         devices=[{"name": "BirdNET and BattyBirdNET", "device": "cpu", "gpu": None}] +
+                 [{"name": m["name"], "device": m["device"]["used"], "gpu": m["device"]["gpu"]}
+                  for m in extra_models.values() if m["status"] == "completed" and m.get("device")])
 
 
 if __name__ == "__main__":

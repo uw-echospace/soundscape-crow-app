@@ -510,7 +510,7 @@ ipcMain.handle('analyze', async (event, { folder, output, offline = false, place
                 if (message.type === 'done') {
                     learnFromRun(message.timings, message.threads);
                     const failed = message.failed_models && message.failed_models.length ? ' These models could not run and are not included: ' + message.failed_models.join(', ') + '.' : '';
-                    result = { ok: true, path: message.path, message: 'Done! ' + message.analyzed + (message.analyzed === 1 ? ' recording' : ' recordings') + ' checked' + (message.skipped ? ' (' + message.skipped + ' could not be read)' : '') + '. ' + (offline ? 'Your results folder is ready.' : message.paths.length === 1 ? 'Your upload folder is ready.' : 'Your ' + message.paths.length + ' upload folders are ready.') + failed };
+                    result = { ok: true, path: message.path, message: 'Done! ' + message.analyzed + (message.analyzed === 1 ? ' recording' : ' recordings') + ' checked' + (message.skipped ? ' (' + message.skipped + ' could not be read)' : '') + '. ' + (offline ? 'Your results folder is ready.' : message.paths.length === 1 ? 'Your upload folder is ready.' : 'Your ' + message.paths.length + ' upload folders are ready.') + failed, devices: message.devices || [] };
                 }
                 if (message.type === 'error') result = { ok: false, message: message.message };
             }
@@ -551,7 +551,11 @@ const ADDON_LEVELS = ['base', 'full'];
 const addonDir = () => path.join(app.getPath('userData'), 'addon');
 const addonResources = () => (app.isPackaged ? path.join(process.resourcesPath, 'addon') : path.join(__dirname, 'addon'));
 const addonPython = () => path.join(addonDir(), 'env', process.platform === 'win32' ? path.join('Scripts', 'python.exe') : path.join('bin', 'python'));
-const addonLock = (level) => path.join(addonResources(), level + '.txt');
+const addonLock = (level, gpu) => path.join(addonResources(), level + (gpu ? '-cuda' : '') + '.txt');
+
+const CUDA_BACKEND = 'cu128';
+const CUDA_MIN_DRIVER = { linux: 525.6, win32: 528.33 };
+const gpuAddonPlatform = () => ['win32', 'linux'].includes(process.platform) && process.arch === 'x64';
 const addonStatusFile = () => path.join(addonDir(), 'installed.json');
 
 const fileSha256 = (file) => require('crypto').createHash('sha256').update(fs.readFileSync(file)).digest('hex');
@@ -564,23 +568,57 @@ function addonModels () {
 
 }
 
-function installedAddonLevel () {
+function installedAddon () {
 
     try {
         const status = JSON.parse(fs.readFileSync(addonStatusFile(), 'utf8'));
-        if (!fs.existsSync(addonPython()) || status.lock_sha256 !== fileSha256(addonLock(status.level))) return null;
-        return status.level;
+        if (!fs.existsSync(addonPython()) || status.lock_sha256 !== fileSha256(addonLock(status.level, status.gpu === 'cuda'))) return null;
+        return status;
     } catch {
         return null;
     }
 
 }
 
-ipcMain.handle('addon-status', () => ({
-    supported: Boolean(UV_DOWNLOADS[process.platform + '-' + process.arch]),
-    level: installedAddonLevel(),
-    models: addonModels()
-}));
+const installedAddonLevel = () => (installedAddon() || {}).level || null;
+
+let gpuPromise = null;
+function detectGpu () {
+
+    if (!gpuPromise) gpuPromise = (async () => {
+        if (process.platform === 'darwin') {
+            return process.arch === 'arm64' ? { kind: 'apple', name: (os.cpus()[0] || {}).model || 'Apple silicon' } : null;
+        }
+        if (!gpuAddonPlatform()) return null;
+        const commands = ['nvidia-smi'];
+        if (process.platform === 'win32') commands.push(path.join(process.env.ProgramFiles || 'C:\\Program Files', 'NVIDIA Corporation', 'NVSMI', 'nvidia-smi.exe'));
+        for (const command of commands) {
+            try {
+                const { stdout } = await util.promisify(execFile)(command, ['--query-gpu=name,driver_version', '--format=csv,noheader'], { timeout: 10000, windowsHide: true });
+                const [name, driver] = stdout.split(/\r?\n/)[0].split(',').map((part) => part.trim());
+                if (name) return { kind: 'nvidia', name, driver, driverOk: parseFloat(driver) >= CUDA_MIN_DRIVER[process.platform] };
+            } catch {}
+        }
+        return null;
+    })();
+    return gpuPromise;
+
+}
+
+ipcMain.handle('addon-status', async () => {
+
+    const installed = installedAddon();
+    return {
+        supported: Boolean(UV_DOWNLOADS[process.platform + '-' + process.arch]),
+        level: installed ? installed.level : null,
+        gpu: installed ? installed.gpu || null : null,
+        cudaWorks: installed ? installed.cuda_works ?? null : null,
+        gpuAddonPlatform: gpuAddonPlatform(),
+        hardware: { cpu: ((os.cpus()[0] || {}).model || 'CPU').trim(), cores: os.cpus().length, gpu: await detectGpu() },
+        models: addonModels()
+    };
+
+});
 
 function runAddonCommand (command, args, env, onLine) {
 
@@ -627,9 +665,10 @@ async function downloadUv (directory) {
 
 }
 
-ipcMain.handle('install-addon', async (event, level) => {
+ipcMain.handle('install-addon', async (event, level, useGpu = false) => {
 
     if (!ADDON_LEVELS.includes(level)) return { ok: false, message: 'Unknown add-on.' };
+    const gpu = useGpu && gpuAddonPlatform() && ((await detectGpu()) || {}).kind === 'nvidia';
 
     const send = (message) => { if (!event.sender.isDestroyed()) event.sender.send('addon-progress', message); };
     const directory = addonDir();
@@ -646,13 +685,21 @@ ipcMain.handle('install-addon', async (event, level) => {
         }
 
         send('Downloading model packages (this can take a while)...');
-        await runAddonCommand(uv, ['pip', 'sync', '--python', addonPython(), '--torch-backend', 'cpu', addonLock(level)], env, (line) => {
+        await runAddonCommand(uv, ['pip', 'sync', '--python', addonPython(), '--torch-backend', gpu ? CUDA_BACKEND : 'cpu', addonLock(level, gpu)], env, (line) => {
             if (/^(Downloading|Downloaded|Prepared|Installed)/.test(line)) send(line);
         });
 
+        let cudaWorks = null;
+        if (gpu) {
+            send('Checking the GPU...');
+            let output = '';
+            await runAddonCommand(addonPython(), ['-I', '-c', 'import torch; print("CUDA", torch.cuda.is_available())'], {}, (line) => { output += line; }).catch(() => {});
+            cudaWorks = output.includes('CUDA True');
+        }
+
         fs.rmSync(env.UV_CACHE_DIR, { recursive: true, force: true });
-        fs.writeFileSync(addonStatusFile(), JSON.stringify({ level, lock_sha256: fileSha256(addonLock(level)), installed_utc: new Date().toISOString() }));
-        return { ok: true, level };
+        fs.writeFileSync(addonStatusFile(), JSON.stringify({ level, gpu: gpu ? 'cuda' : null, cuda_works: cudaWorks, lock_sha256: fileSha256(addonLock(level, gpu)), installed_utc: new Date().toISOString() }));
+        return { ok: true, level, gpu: gpu ? 'cuda' : null, cudaWorks };
     } catch (error) {
         if (error.message === 'cancelled') return { ok: false, message: 'Download cancelled.' };
         return { ok: false, message: 'The add-on could not be installed: ' + error.message + ' Check your internet connection and try again.' };
